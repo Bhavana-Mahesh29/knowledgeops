@@ -1,0 +1,190 @@
+{
+  "version": "2026-09-22",
+  "nodes": {
+    "node_settings": {
+      "parent": null,
+      "label": "Settings",
+      "aliases": [
+        "settings"
+      ],
+      "is_deprecated": false
+    },
+    "node_security": {
+      "parent": "node_settings",
+      "label": "Security",
+      "aliases": [
+        "security",
+        "security tab",
+        "suraksha"
+      ],
+      "is_deprecated": false
+    },
+    "node_auth": {
+      "parent": "node_security",
+      "label": "Authentication",
+      "aliases": [
+        "authentication",
+        "auth"
+      ],
+      "is_deprecated": false
+    },
+    "node_reset_token": {
+      "parent": "node_auth",
+      "label": "Reset Token",
+      "aliases": [
+        "reset token",
+        "reset security token",
+        "regenerate token",
+        "confirm & generate new token",
+        "confirm and generate new token",
+        "enter password"
+      ],
+      "is_deprecated": false
+    },
+    "node_global_reset": {
+      "parent": "node_settings",
+      "label": "Global Reset",
+      "aliases": [
+        "global reset"
+      ],
+      "is_deprecated": true
+    },
+    "node_billing": {
+      "parent": null,
+      "label": "Billing",
+      "aliases": [
+        "billing"
+      ],
+      "is_deprecated": false
+    },
+    "node_invoices": {
+      "parent": "node_billing",
+      "label": "Invoices",
+      "aliases": [
+        "invoices"
+      ],
+      "is_deprecated": false
+    },
+    "node_invoice_download": {
+      "parent": "node_invoices",
+      "label": "Download",
+      "aliases": [
+        "download"
+      ],
+      "is_deprecated": false
+    },
+    "node_statements": {
+      "parent": "node_billing",
+      "label": "Statements",
+      "aliases": [
+        "statements"
+      ],
+      "is_deprecated": false
+    },
+    "node_export": {
+      "parent": "node_statements",
+      "label": "Export",
+      "aliases": [
+        "export"
+      ],
+      "is_deprecated": false
+    },
+    "node_notifications": {
+      "parent": "node_settings",
+      "label": "Notifications",
+      "aliases": [
+        "notifications"
+      ],
+      "is_deprecated": false
+    },
+    "node_email_notif": {
+      "parent": "node_notifications",
+      "label": "Email",
+      "aliases": [
+        "email"
+      ],
+      "is_deprecated": false
+    },
+    "node_preferences": {
+      "parent": "node_settings",
+      "label": "Preferences",
+      "aliases": [
+        "preferences"
+      ],
+      "is_deprecated": false
+    },
+    "node_alerts": {
+      "parent": "node_preferences",
+      "label": "Alerts",
+      "aliases": [
+        "alerts"
+      ],
+      "is_deprecated": false
+    },
+    "node_email_alert": {
+      "parent": "node_alerts",
+      "label": "Email",
+      "aliases": [
+        "email alerts"
+      ],
+      "is_deprecated": false
+    },
+    "node_profile": {
+      "parent": null,
+      "label": "Profile",
+      "aliases": [
+        "profile"
+      ],
+      "is_deprecated": false
+    },
+    "node_profile_settings": {
+      "parent": "node_profile",
+      "label": "Profile Settings",
+      "aliases": [
+        "profile settings"
+      ],
+      "is_deprecated": false
+    },
+    "node_api_security": {
+      "parent": "node_profile_settings",
+      "label": "API & Security Details",
+      "aliases": [
+        "api & security details",
+        "api details"
+      ],
+      "is_deprecated": false
+    },
+    "node_edit": {
+      "parent": "node_profile",
+      "label": "Edit",
+      "aliases": [
+        "edit"
+      ],
+      "is_deprecated": false
+    },
+    "node_photo": {
+      "parent": "node_edit",
+      "label": "Photo",
+      "aliases": [
+        "photo"
+      ],
+      "is_deprecated": false
+    },
+    "node_avatar": {
+      "parent": "node_profile",
+      "label": "Avatar",
+      "aliases": [
+        "avatar"
+      ],
+      "is_deprecated": false
+    },
+    "node_upload": {
+      "parent": "node_avatar",
+      "label": "Upload",
+      "aliases": [
+        "upload"
+      ],
+      "is_deprecated": false
+    }
+  }
+}

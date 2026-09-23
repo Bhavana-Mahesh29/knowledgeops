@@ -1,0 +1,47 @@
+{
+  "freshdesk_domain": {
+    "display_name": "Freshdesk domain",
+    "description": "Your full Freshdesk domain, e.g. yourcompany.freshdesk.com (no https://, no trailing slash).",
+    "type": "text",
+    "required": true
+  },
+  "freshdesk_api_key": {
+    "display_name": "Freshdesk API key",
+    "description": "From your Freshdesk profile settings. Needed to read tickets and conversations and to publish article updates.",
+    "type": "text",
+    "secure": true,
+    "required": true
+  },
+  "anthropic_api_key": {
+    "display_name": "Anthropic API Key",
+    "description": "Used for step extraction (Haiku) and patch drafting (Sonnet). If the key is missing or the call fails, the app falls back to deterministic taxonomy matching and a template patch.",
+    "type": "text",
+    "secure": true,
+    "required": true
+  },
+  "admin_emails": {
+    "display_name": "Approvers (agent emails)",
+    "description": "Comma-separated Freshdesk agent emails allowed to approve, edit or reject a patch. Leave blank to allow anyone who can open the app. This controls the buttons, not the data-pipe - restrict who can open the app for a real boundary.",
+    "type": "text",
+    "required": false
+  },
+  "demo_mode": {
+    "display_name": "Demo mode (relaxed convergence gates)",
+    "description": "Raises an alert from a single ticket instead of requiring 4 tickets from 3 different agents. Turn this ON to see the full pipeline from one simulated ticket. Leave OFF in production.",
+    "type": "checkbox",
+    "default_value": false
+  },
+  "provision_hedging": {
+    "display_name": "Enable provisional-answer hedging (demo only)",
+    "description": "When on, the bot may share an unapproved provisional path for Critical alerts. Leave OFF in production.",
+    "type": "checkbox",
+    "default_value": false
+  },
+  "publish_mode": {
+    "display_name": "Publish mode",
+    "description": "demo publishes approved patches immediately; production saves them as drafts for manual release.",
+    "type": "dropdown",
+    "options": ["production", "demo"],
+    "default_value": "production"
+  }
+}

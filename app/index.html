@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KnowledgeOps Console</title>
+<link rel="stylesheet" href="styles/style.css">
+</head>
+<body>
+<header>
+  <h1>KnowledgeOps &mdash; Action Board</h1>
+  <div class="ingest">
+    <label for="ticketId">Ingest ticket</label>
+    <input id="ticketId" type="text" inputmode="numeric" placeholder="ticket id" />
+    <button id="ingest" class="secondary" type="button">Ingest</button>
+  </div>
+</header>
+
+<p id="status" class="status" hidden></p>
+
+<div class="row">
+  <section class="col">
+    <h2>Open alerts</h2>
+    <div id="board"><p class="muted">Loading&hellip;</p></div>
+  </section>
+  <section class="col">
+    <h2>Review</h2>
+    <div id="detail"><p class="muted">Select an alert to review its evidence and the proposed patch.</p></div>
+  </section>
+</div>
+
+<section>
+  <div class="section-head">
+    <h2>Taxonomy learning <span class="muted">(Taxonomy Mutation Warning &mdash; lite)</span></h2>
+    <button id="forget" class="secondary" type="button">Reset learned graph</button>
+  </div>
+  <pre id="unknown">(none)</pre>
+</section>
+
+<script src="{{{appclient}}}"></script>
+<script src="scripts/app.js"></script>
+</body>
+</html>

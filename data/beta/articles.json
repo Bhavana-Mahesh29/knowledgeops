@@ -1,0 +1,26 @@
+{
+  "A": {
+    "title": "Reset your security token",
+    "documented_path": ["node_settings", "node_global_reset"],
+    "baseline_reopen_rate": 0.0,
+    "markdown": "# Reset your security token\n## Overview\nUse this guide if your security token has expired or was compromised.\n## Steps\n1. Go to **Settings** \u2192 **Global Reset**.\n2. Choose *Confirm reset*.\n## Troubleshooting\nIf the option is missing, contact support.\n"
+  },
+  "B": {
+    "title": "Download an invoice",
+    "documented_path": ["node_billing", "node_invoices", "node_invoice_download"],
+    "baseline_reopen_rate": 0.0,
+    "markdown": "# Download an invoice\n## Overview\nUse this guide to download a copy of any past invoice.\n## Steps\n1. Go to **Billing** \u2192 **Invoices** \u2192 **Download**.\n2. Choose *PDF format*.\n## Troubleshooting\nIf no invoices appear, check your billing period filter.\n"
+  },
+  "C": {
+    "title": "Enable email notifications",
+    "documented_path": ["node_settings", "node_notifications", "node_email_notif"],
+    "baseline_reopen_rate": 0.0,
+    "markdown": "# Enable email notifications\n## Overview\nUse this guide to turn on email alerts for account activity.\n## Steps\n1. Go to **Settings** \u2192 **Notifications** \u2192 **Email**.\n2. Choose *Enable*.\n## Troubleshooting\nCheck your spam folder if emails don't arrive.\n"
+  },
+  "D": {
+    "title": "Update your profile photo",
+    "documented_path": ["node_profile", "node_edit", "node_photo"],
+    "baseline_reopen_rate": 0.0,
+    "markdown": "# Update your profile photo\n## Overview\nUse this guide to change the photo shown on your profile.\n## Steps\n1. Go to **Profile** \u2192 **Edit** \u2192 **Photo**.\n2. Choose *Upload new image*.\n## Troubleshooting\nImages must be under 5MB.\n"
+  }
+}

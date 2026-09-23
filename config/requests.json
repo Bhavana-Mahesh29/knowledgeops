@@ -1,0 +1,59 @@
+{
+  "anthropicMessages": {
+    "schema": {
+      "method": "POST",
+      "host": "api.anthropic.com",
+      "path": "/v1/messages",
+      "headers": {
+        "x-api-key": "<%= iparam.anthropic_api_key %>",
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+      }
+    },
+    "options": {
+      "maxAttempts": 2,
+      "retryDelay": 1000
+    }
+  },
+  "fdGetTicket": {
+    "schema": {
+      "method": "GET",
+      "host": "<%= iparam.freshdesk_domain %>",
+      "path": "/api/v2/tickets/<%= context.ticket_id %>",
+      "headers": {
+        "Authorization": "Basic <%= encode(iparam.freshdesk_api_key + ':X') %>"
+      }
+    }
+  },
+  "fdGetConversations": {
+    "schema": {
+      "method": "GET",
+      "host": "<%= iparam.freshdesk_domain %>",
+      "path": "/api/v2/tickets/<%= context.ticket_id %>/conversations",
+      "headers": {
+        "Authorization": "Basic <%= encode(iparam.freshdesk_api_key + ':X') %>"
+      }
+    }
+  },
+  "fdGetArticle": {
+    "schema": {
+      "method": "GET",
+      "host": "<%= iparam.freshdesk_domain %>",
+      "path": "/api/v2/solutions/articles/<%= context.article_id %>",
+      "headers": {
+        "Authorization": "Basic <%= encode(iparam.freshdesk_api_key + ':X') %>"
+      }
+    }
+  },
+  "fdUpdateArticle": {
+    "schema": {
+      "method": "PUT",
+      "host": "<%= iparam.freshdesk_domain %>",
+      "path": "/api/v2/solutions/articles/<%= context.article_id %>",
+      "headers": {
+        "Authorization": "Basic <%= encode(iparam.freshdesk_api_key + ':X') %>",
+        "content-type": "application/json"
+      }
+    }
+  }
+}
