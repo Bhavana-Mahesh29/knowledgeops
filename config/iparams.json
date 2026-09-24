@@ -43,5 +43,25 @@
     "type": "dropdown",
     "options": ["production", "demo"],
     "default_value": "production"
+  },
+  "embedding_provider": {
+    "display_name": "Embedding provider (ticket-to-article matching)",
+    "description": "local = built-in deterministic embedder, no key or network needed. voyage = Voyage AI embeddings (needs the Voyage API key below). Changing provider re-embeds the knowledge base on the next match.",
+    "type": "dropdown",
+    "options": ["local", "voyage"],
+    "default_value": "local"
+  },
+  "voyage_api_key": {
+    "display_name": "Voyage AI API key",
+    "description": "Only used when the embedding provider is voyage. Sent to api.voyageai.com to embed knowledge-base articles and the subject + resolution of resolved tickets (after PII redaction).",
+    "type": "text",
+    "secure": true,
+    "required": false
+  },
+  "semantic_match_threshold": {
+    "display_name": "Semantic match threshold",
+    "description": "Minimum cosine similarity (0-1) for an article to be shown to the relevance gate. Leave blank for the provider default: 0.80 for voyage, 0.30 for local.",
+    "type": "text",
+    "required": false
   }
 }

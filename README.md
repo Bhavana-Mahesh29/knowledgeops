@@ -8,6 +8,10 @@ Freshdesk once a human approves it.
 
 Every time a ticket is resolved or closed (`onTicketUpdate`):
 
+0. **Match** — `server/lib/matcher.js` decides which solution article the
+   ticket was resolved with (see *Matching a resolved ticket to an article*
+   below). A match goes on to step 1; a ticket no article describes is
+   recorded as a **knowledge gap** and never enters drift analysis.
 1. **Redact** — `server/lib/redact.js` strips email, phone, Aadhaar (Verhoeff
    checked), PAN and agent sign-offs from the reply text. This runs before the
    text reaches any model or the datastore. Regex-based, not NER-grade.
@@ -57,6 +61,84 @@ dropped wholesale from the board. Neither invents a node: aliases recognise a
 rewording of a node that exists, routes connect two nodes that exist. An edge
 that would close a loop is refused, and if one ever slipped through, the walk
 shortens the route rather than losing the node.
+
+## Matching a resolved ticket to an article
+
+Drift is only meaningful against the article the agent actually followed, so
+every resolved ticket is matched first. Three stages, cheapest and most
+certain first; each stops the funnel as soon as it decides:
+
+1. **Deterministic linkage** (`server/lib/linkage.js`) — an
+   `associated_solution_article_id` (or equivalent field), then a
+   Freshdesk/Freshservice solution URL in the resolution, notes or replies,
+   then a category/subcategory that maps to exactly one KB article. Links to
+   two different articles, or two articles in one category, are ambiguity and
+   fall through — nothing is picked at random.
+2. **Semantic retrieval** (`embeddings.js`, `vectorstore.js`, `query.js`) —
+   the ticket's subject + final resolution note (greetings, signatures,
+   quoted history and boilerplate stripped, PII redacted) is embedded and
+   compared by cosine similarity against every article's title, category and
+   procedure. The top 3 at or above the threshold go on; none means
+   `KNOWLEDGE_GAP` (`no_semantic_match`).
+3. **Relevance gate** (`relevance.js`) — Claude gets the redacted ticket and
+   those ≤3 candidates, **never the knowledge base**, and must say which one
+   describes the exact procedure performed, via a forced tool call. The
+   answer is validated: an article id that was not offered or malformed output
+   is never read as a match. `NO_MATCH` or a match below
+   `relevance_min_confidence` is a `KNOWLEDGE_GAP` (`no_relevant_article` /
+   `low_confidence_llm_gate`).
+
+Outcomes are `ARTICLE_MATCH`, `KNOWLEDGE_GAP`, `INSUFFICIENT_EVIDENCE` (no
+resolution text to match on) and `MATCHING_UNAVAILABLE` (the embedding
+service, the vector store or Claude failed or answered garbage). An outage is
+never reported as a gap. Every result says how it was reached (`method`,
+`stage`, `candidates`, `semantic_score`, `confidence`, `reason`) and carries
+the funnel (`metrics`, `trace`), which is also logged as
+`[knowledgeops] match: {...}` and totalled by `getMatchMetrics`.
+
+Only `associated_solution_article_id` and URL matches count as **explicit**
+links for the N gate in scoring. Category and semantic matches add to an
+article's traffic and agent count, but cannot raise an alert on their own.
+
+**Serverless methods**
+
+| Method | Does |
+| --- | --- |
+| `matchResolvedTicket` | The `POST /match-resolved-ticket` equivalent. Takes `ticket_id`, `subject`, `resolution_note`, `conversation`, `associated_solution_article_id`, `category`, `subcategory` (optionally `agent_id`, `run_drift: false`). Returns the match, plus `drift` for a match or `knowledge_gap` for a gap. |
+| `indexKnowledgeBase` | Loads `articles` (optional; `{ article_id, title, category, subcategory, body }` or a Freshdesk article payload) and embeds whatever is new or changed. |
+| `listKnowledgeGaps` | Gaps recorded so far, with the redacted subject/resolution and the articles ruled out. |
+| `getMatchMetrics` | Funnel totals across all matched tickets. |
+
+**Embeddings** are behind one interface (`createEmbedder` → `embedText`,
+`embedArticle`). `local` is a deterministic feature-hashing embedder — no key,
+no network — and the default; `voyage` calls Voyage AI through the
+`voyageEmbeddings` request template. Each article's embedding is stored in
+`$db` with its content hash and model, and regenerated only when either
+changes. The index is a linear scan: fine for a support KB of a few thousand
+articles, and the serverless runtime cannot host a native vector store.
+
+**Configuration** — install page, or the environment when the libraries run
+under plain node (`envOverrides(process.env)`):
+
+| iparam | Environment | Default |
+| --- | --- | --- |
+| `embedding_provider` | `EMBEDDING_PROVIDER` | `local` |
+| `voyage_api_key` (secure) | — (`VOYAGE_API_KEY` for the demo script) | — |
+| `semantic_match_threshold` | `SEMANTIC_MATCH_THRESHOLD` | `0.80` for voyage, `0.30` for local |
+| `semantic_top_k` | `SEMANTIC_TOP_K` | `3` (never more) |
+| `embedding_model` | `EMBEDDING_MODEL` | `voyage-3.5` / `hash-512-v1` |
+| `relevance_model` | `RELEVANCE_MODEL` | `claude-sonnet-5` |
+| `relevance_min_confidence` | `RELEVANCE_MIN_CONFIDENCE` | `0.70` |
+
+Scores are not comparable across embedding models, which is why the default
+threshold depends on the provider. Recalibrate when you change models:
+`npm run demo:match` prints every ticket's top score against the dataset's
+ground truth.
+
+`npm run demo:match` runs `data/beta/resolved_tickets.json` through the real
+server code in the FDK sandbox stand-in and prints each ticket's funnel. With
+`ANTHROPIC_API_KEY` set, stage 3 calls Claude; without it, an offline
+title-overlap stand-in answers instead, and the output says so.
 
 ## The taxonomy is configuration, not sample data
 
@@ -175,6 +257,40 @@ fires `onTicketUpdate`, the app ingests it, and any alert appears on the board
 for an approver. The only manual step left is the approval itself, which is
 the point.
 
+### Automatic ingestion while developing with `fdk run`
+
+Product events never reach a local server, but a Freshdesk automation
+webhook can, through the ngrok tunnel FDK opens:
+
+1. `fdk run --tunnel --tunnel-auth <your ngrok authtoken>` and copy the
+   printed `Tunnel URL`.
+2. Open <http://localhost:10001/web/test> once. FDK only loads the app's
+   event list when something asks for it; until then every webhook fails with
+   `Events not configured for module common`.
+3. In Freshdesk: **Admin -> Workflows -> Automations -> Ticket Updates -> New
+   rule**. When: *Status is changed to Resolved* (add *Closed* if you want).
+   Action: *Trigger webhook*, `POST` to `<Tunnel URL>/event/hook/common`,
+   encoding JSON, content `{"ticket_id": "{{ticket.id}}"}`.
+
+The URL must end in **`/common`**: this is a modular (platform 3.0) app, and
+FDK answers `/event/hook/freshdesk` with `Events not configured for product
+freshdesk`. The handler re-reads the ticket from Freshdesk, so it is ingested
+only if it really is resolved. A free ngrok URL changes on every restart;
+update the rule when it does. Once the app is installed from the zip, native
+`onTicketUpdate` does the same job, so disable the rule then or every ticket
+is ingested twice (harmless, but duplicated work).
+
+Every ingest prints the verdict in the terminal:
+
+    [knowledgeops] drift: ticket 9 -> article 68000037230 "Reset your security token"
+      documented path : Profile Settings → API & Security Details → Reset Security Token
+      agent's path    : Profile → Authentication → Security → Reset Security Token
+      verdict         : PROCEDURAL DRIFT - critical alert raised (confidence 1.00), validated patch drafted, awaiting approval
+
+Other verdicts: `NO DRIFT`, `PROCEDURAL DRIFT observed` (recorded, below the
+alert gates), `UNDETERMINED` (steps did not resolve to a path), or
+`no drift check: ...` for a knowledge gap or unavailable matching.
+
 ### Seeing it end to end
 
 The convergence rule deliberately needs **4 tickets from 3 different agents**
@@ -196,8 +312,10 @@ Either way the alert then shows up on the action board. Open it, read the
 evidence and the proposed diff, and press **Approve & publish** — that is the
 step that writes to Freshdesk.
 
-A ticket is skipped (not an error) when it is not resolved/closed, or when no
-public agent reply links to a solution article. The console says which.
+A ticket is skipped (not an error) when it is not resolved/closed, when no
+article matches it (a knowledge gap, recorded for `listKnowledgeGaps`), or
+when matching is unavailable. The console says which, and logs the matching
+funnel as `[knowledgeops] match: {...}`.
 
 ## Tests
 
@@ -221,14 +339,25 @@ would break under `fdk run`, it breaks there first.
     ├── config
     │   ├── iparams.json             Installation parameters
     │   └── requests.json            Request templates for Freshdesk + Anthropic
-    ├── data                         Reference datasets from the original prototype (not used at runtime)
+    ├── data                         Reference datasets (not used at runtime); beta/resolved_tickets.json
+    │                                and ground_truth.json's "matching" section drive the matcher tests
+    ├── scripts/match-demo.js        Runs the dataset through matching and prints the funnel
     ├── server
-    │   ├── server.js                Event handler, rescoring, serverless methods
+    │   ├── server.js                Event handler, matching I/O, rescoring, serverless methods
     │   ├── lib/                     Pure-logic modules, all dual-exported (see below)
+    │   │   ├── matcher.js           The three-stage ticket-to-article matcher
+    │   │   ├── linkage.js           Stage 1: associated article, URL, category
+    │   │   ├── query.js             Resolution query / article text cleaning
+    │   │   ├── embeddings.js        Embedding providers (local, voyage)
+    │   │   ├── vectorstore.js       Index, embedding cache, cosine top-K
+    │   │   ├── relevance.js         Stage 3: Claude relevance gate
+    │   │   └── matchconfig.js       Thresholds and models, one place
     │   └── test_data/               Payloads the "simulate event" page uses
     ├── tests
     │   ├── app.test.js              Front-end tests
     │   ├── pipeline.test.js         End-to-end through the sandbox
+    │   ├── matching.test.js         Matcher, stage by stage, and the dataset
+    │   ├── matching-pipeline.test.js  Matching wired into the server
     │   └── sandbox.js               FDK sandbox stand-in
     ├── test.js                      Pure-logic assertions, runnable with plain node
     └── manifest.json

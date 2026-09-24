@@ -1,0 +1,94 @@
+[
+  {
+    "ticket_id": "R-201",
+    "subject": "Need a copy of last month's invoice",
+    "resolution_note": "Sent the customer the invoice download steps.",
+    "associated_solution_article_id": "9002",
+    "category": "Billing",
+    "subcategory": "Invoices"
+  },
+  {
+    "ticket_id": "R-202",
+    "subject": "Change the address on my invoices",
+    "resolution_note": "Walked the customer through it, see https://acme.freshdesk.com/a/solutions/articles/9007 for the guide.",
+    "associated_solution_article_id": null,
+    "category": "Billing",
+    "subcategory": ""
+  },
+  {
+    "ticket_id": "R-203",
+    "subject": "Email alerts stopped",
+    "resolution_note": "Re-enabled email notifications for the account.",
+    "associated_solution_article_id": null,
+    "category": "Account",
+    "subcategory": "Notifications"
+  },
+  {
+    "ticket_id": "R-204",
+    "subject": "Customer charged twice",
+    "resolution_note": "Processed a partial refund for the duplicate charge.",
+    "conversation": [
+      {
+        "incoming": true,
+        "private": false,
+        "body_text": "Hi, I was charged twice this month! Please fix. Thanks, Sam"
+      },
+      {
+        "incoming": false,
+        "private": false,
+        "body_text": "Hi Sam,\n\nSorry about that. I have processed a partial refund for the duplicate charge.\n\nHope this helps!\nRegards,\nPriya"
+      }
+    ],
+    "associated_solution_article_id": null,
+    "category": "Billing",
+    "subcategory": ""
+  },
+  {
+    "ticket_id": "R-205",
+    "subject": "Refund for unused annual plan",
+    "resolution_note": "Customer cancelled within the window. Issued a full refund of the entire annual plan payment to the original card.",
+    "associated_solution_article_id": null,
+    "category": "Billing",
+    "subcategory": "Refunds"
+  },
+  {
+    "ticket_id": "R-206",
+    "subject": "Stop my subscription",
+    "resolution_note": "Cancelled the subscription at the end of the current billing period as requested.",
+    "associated_solution_article_id": null,
+    "category": "Billing",
+    "subcategory": ""
+  },
+  {
+    "ticket_id": "R-207",
+    "subject": "Payments failing at checkout",
+    "resolution_note": "Configured a new payment gateway integration with Stripe and rotated the webhook signing secret.",
+    "associated_solution_article_id": null,
+    "category": "Billing",
+    "subcategory": ""
+  },
+  {
+    "ticket_id": "R-208",
+    "subject": "Okta SSO login broken",
+    "resolution_note": "Uploaded the new SAML metadata XML from Okta and remapped the NameID attribute.",
+    "associated_solution_article_id": null,
+    "category": "",
+    "subcategory": ""
+  },
+  {
+    "ticket_id": "R-210",
+    "subject": "Chargeback on a refund payment",
+    "resolution_note": "Responded to the bank chargeback dispute on the payment by uploading the signed contract and the refund receipt as evidence in the payment processor dashboard.",
+    "associated_solution_article_id": null,
+    "category": "Billing",
+    "subcategory": ""
+  },
+  {
+    "ticket_id": "R-209",
+    "subject": "Question about my account",
+    "resolution_note": "",
+    "associated_solution_article_id": null,
+    "category": "",
+    "subcategory": ""
+  }
+]

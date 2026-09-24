@@ -1,26 +1,89 @@
 {
   "A": {
+    "article_id": "9001",
+    "category": "Account",
+    "subcategory": "Security",
     "title": "Reset your security token",
-    "documented_path": ["node_settings", "node_global_reset"],
-    "baseline_reopen_rate": 0.0,
-    "markdown": "# Reset your security token\n## Overview\nUse this guide if your security token has expired or was compromised.\n## Steps\n1. Go to **Settings** \u2192 **Global Reset**.\n2. Choose *Confirm reset*.\n## Troubleshooting\nIf the option is missing, contact support.\n"
+    "documented_path": [
+      "node_settings",
+      "node_global_reset"
+    ],
+    "baseline_reopen_rate": 0,
+    "markdown": "# Reset your security token\n## Overview\nUse this guide if your security token has expired or was compromised.\n## Steps\n1. Go to **Settings** → **Global Reset**.\n2. Choose *Confirm reset*.\n## Troubleshooting\nIf the option is missing, contact support.\n"
   },
   "B": {
+    "article_id": "9002",
+    "category": "Billing",
+    "subcategory": "Invoices",
     "title": "Download an invoice",
-    "documented_path": ["node_billing", "node_invoices", "node_invoice_download"],
-    "baseline_reopen_rate": 0.0,
-    "markdown": "# Download an invoice\n## Overview\nUse this guide to download a copy of any past invoice.\n## Steps\n1. Go to **Billing** \u2192 **Invoices** \u2192 **Download**.\n2. Choose *PDF format*.\n## Troubleshooting\nIf no invoices appear, check your billing period filter.\n"
+    "documented_path": [
+      "node_billing",
+      "node_invoices",
+      "node_invoice_download"
+    ],
+    "baseline_reopen_rate": 0,
+    "markdown": "# Download an invoice\n## Overview\nUse this guide to download a copy of any past invoice.\n## Steps\n1. Go to **Billing** → **Invoices** → **Download**.\n2. Choose *PDF format*.\n## Troubleshooting\nIf no invoices appear, check your billing period filter.\n"
   },
   "C": {
+    "article_id": "9003",
+    "category": "Account",
+    "subcategory": "Notifications",
     "title": "Enable email notifications",
-    "documented_path": ["node_settings", "node_notifications", "node_email_notif"],
-    "baseline_reopen_rate": 0.0,
-    "markdown": "# Enable email notifications\n## Overview\nUse this guide to turn on email alerts for account activity.\n## Steps\n1. Go to **Settings** \u2192 **Notifications** \u2192 **Email**.\n2. Choose *Enable*.\n## Troubleshooting\nCheck your spam folder if emails don't arrive.\n"
+    "documented_path": [
+      "node_settings",
+      "node_notifications",
+      "node_email_notif"
+    ],
+    "baseline_reopen_rate": 0,
+    "markdown": "# Enable email notifications\n## Overview\nUse this guide to turn on email alerts for account activity.\n## Steps\n1. Go to **Settings** → **Notifications** → **Email**.\n2. Choose *Enable*.\n## Troubleshooting\nCheck your spam folder if emails don't arrive.\n"
   },
   "D": {
+    "article_id": "9004",
+    "category": "Account",
+    "subcategory": "Profile",
     "title": "Update your profile photo",
-    "documented_path": ["node_profile", "node_edit", "node_photo"],
-    "baseline_reopen_rate": 0.0,
-    "markdown": "# Update your profile photo\n## Overview\nUse this guide to change the photo shown on your profile.\n## Steps\n1. Go to **Profile** \u2192 **Edit** \u2192 **Photo**.\n2. Choose *Upload new image*.\n## Troubleshooting\nImages must be under 5MB.\n"
+    "documented_path": [
+      "node_profile",
+      "node_edit",
+      "node_photo"
+    ],
+    "baseline_reopen_rate": 0,
+    "markdown": "# Update your profile photo\n## Overview\nUse this guide to change the photo shown on your profile.\n## Steps\n1. Go to **Profile** → **Edit** → **Photo**.\n2. Choose *Upload new image*.\n## Troubleshooting\nImages must be under 5MB.\n"
+  },
+  "E": {
+    "article_id": "9005",
+    "category": "Billing",
+    "subcategory": "Refunds",
+    "title": "How to process a partial refund",
+    "documented_path": [],
+    "baseline_reopen_rate": 0,
+    "markdown": "# How to process a partial refund\n## Overview\nUse this procedure when a customer should get back part of a payment, for example a duplicate charge or an overcharge on one invoice.\n## Steps\n1. Open the customer record and go to **Billing** → **Payments**.\n2. Select the charge that needs a partial refund and choose *Refund*.\n3. Enter the partial refund amount (the duplicate or overcharged portion only) and a refund reason.\n4. Confirm the partial refund. The amount returns to the original payment method in 5-10 business days.\n## Troubleshooting\nIf the Refund option is greyed out, the charge has not settled yet - wait 24 hours.\n"
+  },
+  "F": {
+    "article_id": "9006",
+    "category": "Billing",
+    "subcategory": "Subscriptions",
+    "title": "How to cancel a subscription",
+    "documented_path": [],
+    "baseline_reopen_rate": 0,
+    "markdown": "# How to cancel a subscription\n## Overview\nUse this procedure when a customer wants to stop their subscription plan and not be billed again.\n## Steps\n1. Go to **Billing** → **Subscriptions**.\n2. Select the active plan and choose *Cancel subscription*.\n3. Pick whether the cancellation takes effect immediately or at the end of the current billing period.\n4. Confirm the cancellation. The customer receives a cancellation email.\n## Troubleshooting\nCancelling does not refund past charges; use the refund procedures for that.\n"
+  },
+  "G": {
+    "article_id": "9007",
+    "category": "Billing",
+    "subcategory": "Payment Details",
+    "title": "How to update a billing address",
+    "documented_path": [],
+    "baseline_reopen_rate": 0,
+    "markdown": "# How to update a billing address\n## Overview\nUse this procedure when a customer needs to change the billing address printed on invoices and used for tax.\n## Steps\n1. Go to **Billing** → **Payment Details**.\n2. Choose *Edit billing address*.\n3. Enter the new street address, city, postal code and country, then save.\n4. Future invoices use the new billing address; past invoices are unchanged.\n## Troubleshooting\nTax is recalculated from the new address on the next invoice.\n"
+  },
+  "H": {
+    "article_id": "9008",
+    "category": "Billing",
+    "subcategory": "Refunds",
+    "title": "How to issue a full refund",
+    "documented_path": [],
+    "baseline_reopen_rate": 0,
+    "markdown": "# How to issue a full refund\n## Overview\nUse this procedure when a customer should get the entire payment back, for example an unused annual plan cancelled within the refund window.\n## Steps\n1. Open the customer record and go to **Billing** → **Payments**.\n2. Select the payment and choose *Refund*.\n3. Choose *Full refund* so the entire amount is returned, and enter a refund reason.\n4. Confirm. The full amount returns to the original payment method in 5-10 business days.\n## Troubleshooting\nFull refunds are only available within 30 days of payment.\n"
   }
 }

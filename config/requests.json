@@ -55,5 +55,20 @@
         "content-type": "application/json"
       }
     }
+  },
+  "voyageEmbeddings": {
+    "schema": {
+      "method": "POST",
+      "host": "api.voyageai.com",
+      "path": "/v1/embeddings",
+      "headers": {
+        "Authorization": "Bearer <%= iparam.voyage_api_key %>",
+        "content-type": "application/json"
+      }
+    },
+    "options": {
+      "maxAttempts": 2,
+      "retryDelay": 1000
+    }
   }
 }

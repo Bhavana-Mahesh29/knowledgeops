@@ -13,7 +13,8 @@
         "fdGetTicket": {},
         "fdGetConversations": {},
         "fdGetArticle": {},
-        "fdUpdateArticle": {}
+        "fdUpdateArticle": {},
+        "voyageEmbeddings": {}
       },
       "functions": {
         "listAlerts": {},
@@ -24,7 +25,16 @@
         "checkFreshness": {},
         "listLearning": {},
         "resetLearning": {},
-        "ingestTicketById": {}
+        "ingestTicketById": {},
+        "matchResolvedTicket": {},
+        "indexKnowledgeBase": {},
+        "listKnowledgeGaps": {},
+        "getMatchMetrics": {}
+      },
+      "events": {
+        "onExternalEvent": {
+          "handler": "onExternalEventHandler"
+        }
       }
     },
     "support_ticket": {

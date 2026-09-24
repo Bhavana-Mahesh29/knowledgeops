@@ -66,6 +66,79 @@ function getArticle(articleId) {
   return dbGet('articles', articleId);
 }
 
+// Drops the article from the knowledge base (matching reads the index); the
+// record itself stays behind, unreferenced.
+async function removeArticle(articleId) {
+  const idx = (await dbGet(INDEX, 'articles')) || [];
+
+  await dbSet(INDEX, 'articles', idx.filter((k) => k !== String(articleId)));
+}
+
+// The whole local knowledge base: every article synced from Freshdesk or
+// loaded through indexKnowledgeBase.
+function listArticles() {
+  return dbList('articles');
+}
+
+// ---- Article embeddings (matching stage 2) -----------------------------
+//
+// One record per article: { article_id, content_hash, model, embedding,
+// updated_at }. The vector store reuses the embedding while the hash and the
+// model are unchanged. Unlike the other getters, a failed read here throws:
+// $db being down must surface as "matching unavailable", not as an article
+// that silently gets re-embedded (or matched against nothing).
+
+async function getEmbedding(articleId) {
+  try {
+    const row = await $db.get(storeKey('embeddings', articleId));
+
+    return row && row.value ? JSON.parse(row.value) : null;
+  } catch (err) {
+    if (err && err.status === 404) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+function saveEmbedding(articleId, record) {
+  return dbSet('embeddings', articleId, record);
+}
+
+// ---- Knowledge gaps and the matching funnel ----------------------------
+
+async function saveKnowledgeGap(ticketId, gap) {
+  await dbSet('knowledge_gaps', ticketId, gap);
+  await dbAppendIndex('knowledge_gaps', ticketId);
+}
+
+function listKnowledgeGaps() {
+  return dbList('knowledge_gaps');
+}
+
+const FUNNEL_COUNTERS = [
+  'stage_1_attempted', 'stage_1_matched', 'stage_2_executed', 'stage_3_executed',
+  'stage_3_match', 'stage_3_no_match', 'knowledge_gap', 'matching_unavailable'
+];
+
+// Running totals across every ticket matched, for the funnel on the board.
+async function recordMatchMetrics(metrics) {
+  const totals = (await dbGet('metrics', 'matching')) || { tickets: 0 };
+
+  totals.tickets += 1;
+  for (const name of FUNNEL_COUNTERS) {
+    totals[name] = (totals[name] || 0) + (metrics[name] ? 1 : 0);
+  }
+
+  await dbSet('metrics', 'matching', totals);
+
+  return totals;
+}
+
+async function getMatchMetrics() {
+  return (await dbGet('metrics', 'matching')) || { tickets: 0 };
+}
+
 // ---- Tickets -----------------------------------------------------------
 
 async function saveTicket(ticketId, ticket) {
@@ -248,6 +321,14 @@ async function resetLearning() {
 const api = {
   saveArticle,
   getArticle,
+  removeArticle,
+  listArticles,
+  getEmbedding,
+  saveEmbedding,
+  saveKnowledgeGap,
+  listKnowledgeGaps,
+  recordMatchMetrics,
+  getMatchMetrics,
   saveTicket,
   getTicket,
   getTicketsForArticle,

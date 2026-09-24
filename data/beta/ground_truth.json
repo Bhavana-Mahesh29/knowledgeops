@@ -39,5 +39,18 @@
     "103": ["phone_number"],
     "109": ["aadhaar"],
     "112": ["pan"]
+  },
+
+  "matching": {
+    "R-201": {"classification": "ARTICLE_MATCH", "article_id": "9002", "method": "associated_solution_article_id", "stage": 1},
+    "R-202": {"classification": "ARTICLE_MATCH", "article_id": "9007", "method": "direct_solution_url", "stage": 1},
+    "R-203": {"classification": "ARTICLE_MATCH", "article_id": "9003", "method": "taxonomy_category_mapping", "stage": 1},
+    "R-204": {"classification": "ARTICLE_MATCH", "article_id": "9005", "method": "semantic_llm_gate", "stage": 3, "note": "partial refund vs full refund / cancel: the gate must pick the procedure performed"},
+    "R-205": {"classification": "ARTICLE_MATCH", "article_id": "9008", "method": "semantic_llm_gate", "stage": 3, "note": "Billing > Refunds is ambiguous (9005, 9008), so stage 1 hands over to retrieval"},
+    "R-206": {"classification": "ARTICLE_MATCH", "article_id": "9006", "method": "semantic_llm_gate", "stage": 3},
+    "R-207": {"classification": "KNOWLEDGE_GAP", "article_id": null, "note": "payment gateway integration is not documented"},
+    "R-208": {"classification": "KNOWLEDGE_GAP", "article_id": null, "note": "SSO setup is not documented"},
+    "R-210": {"classification": "KNOWLEDGE_GAP", "article_id": null, "method": "no_relevant_article", "stage": 3, "note": "retrieves the refund article, but a chargeback response is a different procedure"},
+    "R-209": {"classification": "INSUFFICIENT_EVIDENCE", "article_id": null, "note": "no resolution note to match on"}
   }
 }

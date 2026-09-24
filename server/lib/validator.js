@@ -80,7 +80,34 @@ function validatePatch(originalMd, patchedMd, expectedNodes) {
   return { passed: errors.length === 0, errors, extractedNodes: nodes };
 }
 
-const api = { validatePatch, splitSections, boldNodes, STEPS };
+// A brand-new article has no original to compare sections against, so checks
+// 1 and 2 become "there is a title and a non-empty Steps section". Checks 3
+// and 4 are unchanged: bold in Steps is reserved for live taxonomy nodes, and
+// they must spell out the path the agent walked, in order.
+function validateNewArticle(md, expectedNodes) {
+  const sections = splitSections(md);
+  const errors = [];
+
+  if (!/^# \S/m.test(sections._head || '')) {
+    errors.push('missing a "# Title" line at the top');
+  }
+
+  if (!String(sections[STEPS] || '').trim()) {
+    errors.push(`missing a non-empty '## ${STEPS}' section`);
+  }
+
+  const { nodes, errors: labelErrors } = boldNodes(sections[STEPS] || '');
+
+  errors.push(...labelErrors);
+
+  if (JSON.stringify(nodes) !== JSON.stringify(expectedNodes)) {
+    errors.push(`path mismatch: got [${nodes}], expected [${expectedNodes}]`);
+  }
+
+  return { passed: errors.length === 0, errors, extractedNodes: nodes };
+}
+
+const api = { validatePatch, validateNewArticle, splitSections, boldNodes, STEPS };
 
 // FDK's serverless sandbox exposes `exports` but no `module`; plain Node needs
 // `module.exports`. Supporting both keeps these files loadable by `node test.js`.

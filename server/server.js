@@ -1,8 +1,11 @@
 // server/server.js
 // KnowledgeOps server-side logic for Freshworks FDK.
 //
-// Pipeline: onTicketUpdate -> redact -> extract steps -> canonicalise ->
-// cluster + score -> draft a patch -> (agent approves) -> publish to Freshdesk.
+// Pipeline: onTicketUpdate -> match the ticket to a KB article (linkage ->
+// semantic retrieval -> relevance gate) -> redact -> extract steps ->
+// canonicalise -> cluster + score -> draft a patch -> (agent approves) ->
+// publish to Freshdesk. A ticket no article matches is recorded as a
+// knowledge gap instead of entering drift analysis.
 //
 // NOTE on exports: the FDK serverless sandbox provides `exports` as a bare
 // global and does NOT define `module`, which is why every file under
@@ -19,9 +22,13 @@ const { draftAndValidate } = require('./lib/architect');
 const { validatePatch } = require('./lib/validator');
 const md = require('./lib/markdown');
 const store = require('./lib/store');
+const { resolveMatchConfig } = require('./lib/matchconfig');
+const { createEmbedder } = require('./lib/embeddings');
+const { buildKnowledgeIndex } = require('./lib/vectorstore');
+const { judgeRelevance } = require('./lib/relevance');
+const { matchResolvedTicket } = require('./lib/matcher');
+const { buildResolutionQuery, normaliseKbArticle } = require('./lib/query');
 
-// Updated regex to support /support/solutions/articles/, /a/solutions/articles/, and relative article URLs
-const ARTICLE_LINK_RE = /(?:a\/|support\/)?solutions\/articles\/(\d+)/i;
 const ARROW = '\u2192';
 
 // Freshdesk ticket statuses that mean "the agent considers this answered".
@@ -105,8 +112,13 @@ function fdUpdateArticle(articleId, html, status) {
 // Caching meant an edit to the article had no effect until the datastore was
 // wiped, which is indistinguishable from the app being broken. One extra GET
 // per ticket is worth not having that failure mode.
+//
+// Freshdesk's article payload carries category and folder ids, not names, so
+// the category labels matching uses (set through indexKnowledgeBase) are
+// carried over from the stored copy rather than wiped by each sync.
 async function syncArticle(articleId) {
   const remote = await fdGetArticle(articleId);
+  const known = (await store.getArticle(articleId)) || {};
   const markdown = md.normaliseArticleMarkdown(
     md.htmlToMarkdown(remote.description),
     remote.title
@@ -114,7 +126,10 @@ async function syncArticle(articleId) {
 
   const article = {
     articleId: String(articleId),
+    source: 'freshdesk',
     title: remote.title || `Article ${articleId}`,
+    category: known.category || '',
+    subcategory: known.subcategory || '',
     markdown,
     documentedPath: md.documentedPathOf(markdown),
     baselineReopenRate: 0.0
@@ -138,20 +153,6 @@ function articleWarning(article) {
 
 function isPublicAgentReply(c) {
   return !c.incoming && !c.private;
-}
-
-function findArticleId(replies) {
-  let articleId = null;
-
-  for (const c of replies) {
-    const m = ARTICLE_LINK_RE.exec(c.body || '');
-
-    if (m !== null) {
-      articleId = m[1];
-    }
-  }
-
-  return articleId;
 }
 
 function recentReplyText(replies) {
@@ -214,10 +215,12 @@ async function promoteAliases(cfg, learned) {
   return promoted;
 }
 
-// Already reachable one way or the other: adding the edge would be a no-op,
-// or it would close a loop and make the lineage walk meaningless.
+// Already a direct parent, so adding the edge would be a no-op; or it would
+// close a loop and make the lineage walk meaningless. A shortcut past an
+// intermediate menu (Profile -> Security, skipping Authentication) is a real
+// new route and is allowed.
 function edgeRedundant(record, edges) {
-  return tax.hasAncestor(record.to, record.from, edges)
+  return tax.parentsOf(record.to, edges).includes(record.from)
     || tax.hasAncestor(record.from, record.to, edges);
 }
 
@@ -315,22 +318,241 @@ async function relearnTickets(articleId, learned) {
   }
 }
 
+// ---------- Ticket-to-article matching -----------------------------------
+//
+// server/lib/matcher.js decides which article a resolved ticket was solved
+// with; this section supplies its I/O. Claude only ever sees the ticket and
+// the <= 3 candidates retrieval produced, never the knowledge base.
+
+const EMBEDDING_CACHE = {
+  get: (articleId) => store.getEmbedding(articleId),
+  save: (articleId, record) => store.saveEmbedding(articleId, record)
+};
+
+// How strongly a match method links a ticket to its article. Only 'explicit'
+// counts towards the N gate in scoring.js; the other kinds still add to the
+// article's traffic and agent count.
+const LINK_TYPES = {
+  associated_solution_article_id: 'explicit',
+  direct_solution_url: 'explicit',
+  taxonomy_category_mapping: 'taxonomy',
+  semantic_llm_gate: 'semantic'
+};
+
+function notFound(err) {
+  return Boolean(err) && Number(err.status) === 404;
+}
+
+// Stage 1 on the Freshdesk path. A linked article counts when Freshdesk has
+// it, indexed or not - which is how ingest worked before matching existed. A
+// 404 is a dead link; any other failure is an outage and propagates, so it
+// ends as MATCHING_UNAVAILABLE rather than a knowledge gap.
+function freshdeskArticleExists(synced) {
+  return async function (articleId) {
+    try {
+      synced.set(String(articleId), await syncArticle(articleId));
+      return true;
+    } catch (err) {
+      if (notFound(err)) {
+        return false;
+      }
+      throw err;
+    }
+  };
+}
+
+// What gets logged: the decision and the funnel. The query text is already
+// redacted, and no request headers or keys ever reach the result.
+function matchLog(result) {
+  return {
+    ticket_id: result.ticket_id,
+    classification: result.classification,
+    method: result.method,
+    stage: result.stage,
+    article_id: result.article_id || null,
+    metrics: result.metrics,
+    funnel: result.trace.join(' | ')
+  };
+}
+
+async function runMatcher(ticket, iparams, articleExists) {
+  const cfg = resolveMatchConfig(iparams);
+  const result = await matchResolvedTicket(ticket, {
+    cfg,
+    articles: await store.listArticles(),
+    embedder: createEmbedder(cfg),
+    cache: EMBEDDING_CACHE,
+    judge: judgeRelevance,
+    articleExists
+  });
+
+  await store.recordMatchMetrics(result.metrics);
+  console.info(`[knowledgeops] match: ${JSON.stringify(matchLog(result))}`);
+
+  return result;
+}
+
+// A semantic match can land on a stored copy of an article Freshdesk no
+// longer has - deleted, or synced from a different helpdesk earlier. Only
+// articles loaded through indexKnowledgeBase are meant to live without a
+// Freshdesk original; any other copy that 404s is dropped from the knowledge
+// base and the ticket is matched again against what is left.
+const MAX_REMATCHES = 3;
+
+async function vanishedArticle(match, synced) {
+  const articleId = String(match.article_id);
+
+  if (match.classification !== 'ARTICLE_MATCH' || synced.has(articleId)) {
+    return false;
+  }
+
+  const stored = await store.getArticle(articleId);
+
+  if (stored !== null && stored.source === 'kb') {
+    return false;
+  }
+
+  const exists = await freshdeskArticleExists(synced)(articleId).catch(() => true);
+
+  if (!exists) {
+    await store.removeArticle(articleId);
+    console.info(`[knowledgeops] article ${articleId} no longer exists in Freshdesk - removed from the knowledge base, re-matching`);
+  }
+
+  return !exists;
+}
+
+async function matchLiveArticle(input, iparams, synced) {
+  let match = await runMatcher(input, iparams, freshdeskArticleExists(synced));
+
+  for (let i = 0; i < MAX_REMATCHES && await vanishedArticle(match, synced); i++) {
+    match = await runMatcher(input, iparams, freshdeskArticleExists(synced));
+  }
+
+  return match;
+}
+
+// The explainable part of a match, as returned to callers.
+function matchSummary(result) {
+  const keys = ['ticket_id', 'classification', 'article_id', 'method', 'stage', 'semantic_score',
+    'confidence', 'candidates', 'semantic_result', 'nearest', 'reason', 'error', 'metrics', 'trace'];
+
+  return keys.reduce((out, k) => {
+    if (result[k] !== undefined) {
+      out[k] = result[k];
+    }
+    return out;
+  }, {});
+}
+
+// Kept so a gap can later seed a new article: the redacted subject and
+// resolution, and the nearest articles that were ruled out.
+async function recordKnowledgeGap(match, ticket) {
+  const query = buildResolutionQuery(ticket);
+  const gap = {
+    ticketId: String(match.ticket_id),
+    subject: query.subject,
+    resolution: query.resolution,
+    method: match.method,
+    stage: match.stage,
+    ruledOut: match.candidates || match.nearest || [],
+    reason: match.reason || null,
+    recommendedAction: 'create_article',
+    detectedAt: new Date().toISOString()
+  };
+
+  await store.saveKnowledgeGap(gap.ticketId, gap);
+
+  return gap;
+}
+
+// ---------- Drift verdict for the terminal -------------------------------
+//
+// The ingest result is JSON for the board; this is the same outcome as a
+// sentence, so whoever is watching `fdk run` can see whether a resolved
+// ticket showed procedural drift without reading the payload.
+
+function pathText(labels) {
+  return labels && labels.length ? labels.join(` ${ARROW} `) : '(none)';
+}
+
+function alertText(alert) {
+  const confidence = Number(alert.confidence || 0).toFixed(2);
+
+  if (alert.finding === 'retired_route_in_use') {
+    return `agents are walking a retired route - ${alert.band} alert raised (confidence ${confidence}), no patch drafted`;
+  }
+
+  const patch = alert.patchPassed === true ? 'validated patch drafted, awaiting approval' : 'no approvable patch yet';
+
+  return `${alert.band} alert raised (confidence ${confidence}), ${patch}`;
+}
+
+function driftVerdict(drift) {
+  if (drift.canonicalStatus === 'inconsistent' && drift.canonicalPath.length) {
+    return 'PROCEDURAL DRIFT (unconfirmed) - the agent took a route the navigation graph does not know yet; recorded as a route candidate, no alert until other responders confirm it';
+  }
+
+  if (drift.canonicalStatus !== 'ok') {
+    return `UNDETERMINED - the agent's steps could not be resolved to one navigation path (${drift.canonicalStatus})`;
+  }
+
+  if (JSON.stringify(drift.canonicalPath) === JSON.stringify(drift.documentedPath)) {
+    return 'NO DRIFT - the agent followed the documented path';
+  }
+
+  if (drift.alerts.length) {
+    return `PROCEDURAL DRIFT - ${drift.alerts.map(alertText).join('; ')}`;
+  }
+
+  return 'PROCEDURAL DRIFT observed - recorded as evidence, below the alert gates for now (needs more explicit links from more distinct responders; demo mode relaxes this)';
+}
+
+function driftReport(ticketId, outcome) {
+  const head = `[knowledgeops] drift: ticket ${ticketId}`;
+  const drift = outcome.drift;
+
+  if (!drift) {
+    return `${head} - no drift check: ${outcome.skipped}`;
+  }
+
+  return [
+    `${head} -> article ${drift.articleId} "${drift.articleTitle}"`,
+    `  documented path : ${pathText(drift.documentedPath)}`,
+    `  agent's steps   : ${(drift.agentSteps || []).join(', ') || 'N/A'}`,
+    `  agent's path    : ${pathText(drift.canonicalPath)}`,
+    `  verdict         : ${driftVerdict(drift)}`
+  ].concat(drift.warning ? [`  warning         : ${drift.warning}`] : []).join('\n');
+}
+
 // ---------- Ingest --------------------------------------------------------
 
-async function ingestTicket(ticket, cfg) {
-  if (!RESOLVED_STATUSES.includes(Number(ticket.status))) {
-    return { ticketId: ticket.id, skipped: 'ticket is not resolved or closed' };
+// An article matched from the local knowledge base may not exist in
+// Freshdesk (a dataset article, a deleted one); its stored copy is the
+// baseline then. When Freshdesk has it, Freshdesk wins, as before.
+async function articleForDrift(articleId, synced) {
+  if (synced.has(articleId)) {
+    return synced.get(articleId);
   }
 
-  const replies = (await fdGetConversations(ticket.id)).filter(isPublicAgentReply);
-  const articleId = findArticleId(replies);
+  try {
+    return await syncArticle(articleId);
+  } catch (err) {
+    const stored = await store.getArticle(articleId);
 
-  if (articleId === null) {
-    return { ticketId: ticket.id, skipped: 'no solution-article link in the public replies' };
+    if (stored !== null && stored.markdown) {
+      return stored;
+    }
+    throw err;
   }
+}
 
-  const article = await syncArticle(articleId);
-  const { redactedText } = redact(recentReplyText(replies));
+// The existing drift pipeline, unchanged, fed with whichever article the
+// matcher chose. `ticket` needs { id, responder_id }.
+async function runDrift(ticket, replyText, match, cfg, synced) {
+  const articleId = String(match.article_id);
+  const article = await articleForDrift(articleId, synced);
+  const { redactedText } = redact(replyText);
   const steps = await extractSteps(redactedText);
 
   // Anything this ticket teaches the graph applies to this ticket too, and
@@ -342,7 +564,10 @@ async function ingestTicket(ticket, cfg) {
   await store.saveTicket(ticket.id, {
     ticketId: String(ticket.id),
     articleId: String(articleId),
-    linkType: 'explicit',
+    linkType: LINK_TYPES[match.method] || 'semantic',
+    matchMethod: match.method,
+    matchStage: match.stage,
+    matchConfidence: match.confidence,
     agentId: String(ticket.responder_id),
     reopened: false,
     redactedText,
@@ -355,7 +580,9 @@ async function ingestTicket(ticket, cfg) {
   return {
     ticketId: ticket.id,
     articleId: String(articleId),
+    articleTitle: article.title,
     canonicalStatus: canon.status,
+    agentSteps: steps,
     canonicalPath: tax.displayPath(canon.canonical_path),
     documentedPath: tax.displayPath(article.documentedPath),
     unknownLabels: canon.unknown_labels,
@@ -364,6 +591,73 @@ async function ingestTicket(ticket, cfg) {
     warning: articleWarning(article),
     alerts: await rescoreArticle(article, cfg)
   };
+}
+
+// MATCH -> drift analysis. KNOWLEDGE_GAP -> a gap record, no drift: comparing
+// a ticket against an article that does not describe what was done would
+// manufacture drift. Anything else (no resolution, matching unavailable)
+// concludes nothing and records nothing.
+async function afterMatch(match, input, evidence, cfg, synced) {
+  const outcome = await matchOutcome(match, input, evidence, cfg, synced);
+
+  console.info(driftReport(evidence.id, outcome));
+
+  return outcome;
+}
+
+async function matchOutcome(match, input, evidence, cfg, synced) {
+  if (match.classification === 'ARTICLE_MATCH') {
+    return { drift: await runDrift(evidence, evidence.replyText, match, cfg, synced) };
+  }
+
+  if (match.classification === 'KNOWLEDGE_GAP') {
+    return {
+      knowledgeGap: await recordKnowledgeGap(match, input),
+      skipped: 'knowledge gap - no article describes this resolution'
+    };
+  }
+
+  return { skipped: `no article matched (${match.classification}: ${match.method})` };
+}
+
+// The matcher's view of a Freshdesk ticket. Freshdesk has no resolution-note
+// field, so the last public agent reply stands in for it; private notes are
+// scanned for article links alongside the replies.
+function freshdeskMatchInput(ticket, conversations) {
+  const custom = ticket.custom_fields || {};
+
+  return {
+    ticket_id: ticket.id,
+    subject: ticket.subject || '',
+    category: custom.cf_category || '',
+    subcategory: custom.cf_subcategory || '',
+    custom_fields: custom,
+    conversation: conversations.filter(isPublicAgentReply),
+    internal_notes: conversations.filter((c) => !c.incoming && c.private)
+  };
+}
+
+async function ingestTicket(ticket, cfg, iparams) {
+  if (!RESOLVED_STATUSES.includes(Number(ticket.status))) {
+    return { ticketId: ticket.id, skipped: 'ticket is not resolved or closed' };
+  }
+
+  const conversations = await fdGetConversations(ticket.id);
+  const input = freshdeskMatchInput(ticket, conversations);
+  const synced = new Map();
+  const match = await matchLiveArticle(input, iparams, synced);
+  const evidence = {
+    id: ticket.id,
+    responder_id: ticket.responder_id,
+    replyText: recentReplyText(input.conversation)
+  };
+  const outcome = await afterMatch(match, input, evidence, cfg, synced);
+
+  return Object.assign({ ticketId: ticket.id }, outcome.drift, {
+    match: matchSummary(match),
+    knowledgeGap: outcome.knowledgeGap,
+    skipped: outcome.skipped
+  });
 }
 
 // A ticket that left resolved/closed after we ingested it is a reopen, which
@@ -394,7 +688,8 @@ async function markReopened(ticket, cfg) {
 
 function handleTicketUpdate(payload) {
   const ticket = (payload.data && payload.data.ticket) || {};
-  const cfg = scoringCfg(payload.iparams || {});
+  const iparams = payload.iparams || {};
+  const cfg = scoringCfg(iparams);
 
   if (!ticket.id) {
     return Promise.resolve({ skipped: 'event payload carried no ticket' });
@@ -404,7 +699,7 @@ function handleTicketUpdate(payload) {
     return markReopened(ticket, cfg);
   }
 
-  return ingestTicket(ticket, cfg);
+  return ingestTicket(ticket, cfg, iparams);
 }
 
 // ---------- Rescoring -----------------------------------------------------
@@ -491,8 +786,6 @@ async function buildAlert(article, path, clusterTickets, denom, cfg) {
     );
   }
 
-  await store.saveAlert(alert.alertId, alert);
-
   return alert;
 }
 
@@ -503,16 +796,21 @@ async function rescoreArticle(article, cfg = DEFAULT_CFG) {
 
   await store.clearOpenAlertsForArticle(article.articleId);
 
+  // Patch drafting is an LLM round trip per cluster; run them side by side so
+  // a multi-cluster article stays inside the serverless method timeout. The
+  // saves stay sequential - the alert index is a read-modify-write.
+  const alerts = await Promise.all([...clusters].map(([key, clusterTickets]) =>
+    buildAlert(article, JSON.parse(key), clusterTickets, denom, cfg)));
   const raised = [];
 
-  for (const [key, clusterTickets] of clusters) {
-    const alert = await buildAlert(article, JSON.parse(key), clusterTickets, denom, cfg);
-
+  for (const alert of alerts) {
     if (alert !== null) {
+      await store.saveAlert(alert.alertId, alert);
       raised.push({
         alertId: alert.alertId,
         band: alert.band,
         confidence: alert.confidence,
+        finding: alert.finding,
         patchPassed: alert.patch ? alert.patch.passed : null
       });
     }
@@ -726,8 +1024,141 @@ async function updatePatch(alertId, markdown, actor) {
   return alert;
 }
 
-async function ingestTicketById(ticketId, cfg) {
-  return ingestTicket(await fdGetTicket(ticketId), cfg);
+async function ingestTicketById(ticketId, cfg, iparams) {
+  return ingestTicket(await fdGetTicket(ticketId), cfg, iparams);
+}
+
+// ---------- Freshdesk automation webhook ----------------------------------
+//
+// `fdk run` never receives real product events, so onTicketUpdate only fires
+// once the app is installed in Freshdesk. For local development, a Freshdesk
+// automation rule ("status changed to Resolved -> trigger webhook") can POST
+// to the tunnel URL `fdk run --tunnel` prints, at /event/hook/common. The
+// body only needs the ticket id; the ticket itself is re-read from Freshdesk,
+// so a forged or stale body cannot claim a status the ticket does not have.
+
+function webhookBody(data) {
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data);
+    } catch (err) {
+      void err;
+      return {};
+    }
+  }
+
+  return data || {};
+}
+
+// Accepts {"ticket_id": 9}, {"ticket": {"id": 9}} and Freshdesk's default
+// {"freshdesk_webhook": {"ticket_id": "9"}}; "#9" works too.
+function webhookTicketId(data) {
+  const body = webhookBody(data);
+  const nested = body.freshdesk_webhook || {};
+  const raw = [body.ticket_id, body.ticket && body.ticket.id, nested.ticket_id, body.id]
+    .find((v) => v !== undefined && v !== null && String(v).trim() !== '');
+  const digits = String(raw === undefined ? '' : raw).replace(/\D/g, '');
+
+  return digits === '' ? null : digits;
+}
+
+async function handleExternalEvent(payload) {
+  const ticketId = webhookTicketId(payload.data);
+
+  if (ticketId === null) {
+    return { skipped: 'webhook body carried no ticket id - send {"ticket_id": "{{ticket.id}}"}' };
+  }
+
+  const ticket = await fdGetTicket(ticketId);
+
+  return handleTicketUpdate({ data: { ticket }, iparams: payload.iparams });
+}
+
+// ---------- Knowledge base and the match endpoint -------------------------
+
+// Stored in the same shape syncArticle writes, so a KB article loaded here
+// can go straight into drift analysis if a ticket matches it.
+async function saveKbArticle(raw) {
+  const a = normaliseKbArticle(raw);
+  const known = (await store.getArticle(a.article_id)) || {};
+  const markdown = md.normaliseArticleMarkdown(a.body, a.title);
+
+  await store.saveArticle(a.article_id, Object.assign({}, known, {
+    articleId: a.article_id,
+    source: 'kb',
+    title: a.title || known.title || `Article ${a.article_id}`,
+    category: a.category,
+    subcategory: a.subcategory,
+    markdown,
+    documentedPath: md.documentedPathOf(markdown),
+    baselineReopenRate: known.baselineReopenRate || 0.0
+  }));
+}
+
+// Loads (optional) articles into the knowledge base and embeds whatever is
+// new or changed; unchanged articles keep their cached embedding.
+async function indexKnowledgeBase(articles, iparams) {
+  for (const raw of articles || []) {
+    await saveKbArticle(raw);
+  }
+
+  const cfg = resolveMatchConfig(iparams);
+  const index = await buildKnowledgeIndex(await store.listArticles(), createEmbedder(cfg), EMBEDDING_CACHE);
+
+  return Object.assign({ provider: cfg.embeddingProvider, model: index.model }, index.stats);
+}
+
+const TICKET_FIELDS = [
+  'ticket_id', 'id', 'subject', 'resolution_note', 'resolution', 'conversation', 'internal_notes',
+  'notes', 'description', 'description_text', 'associated_solution_article_id', 'solution_article_id',
+  'custom_fields', 'category', 'subcategory'
+];
+
+// Only ticket fields go to the matcher - never iparams or anything else the
+// platform adds to a method's arguments.
+function requestTicket(args) {
+  return TICKET_FIELDS.reduce((t, k) => {
+    if (args[k] !== undefined) {
+      t[k] = args[k];
+    }
+    return t;
+  }, {});
+}
+
+// Step extraction reads what the agent wrote: the resolution note plus the
+// last few public agent replies, when the caller sent the conversation.
+function requestReplyText(ticket) {
+  const replies = Array.isArray(ticket.conversation) ? ticket.conversation.filter(isPublicAgentReply) : [];
+
+  return [ticket.resolution_note || ticket.resolution || '', recentReplyText(replies)]
+    .filter((t) => t !== '')
+    .join('\n\n');
+}
+
+// POST /match-resolved-ticket, as a serverless method. Returns the matching
+// decision, plus the drift analysis for a match or the gap record for a gap.
+async function matchResolvedTicketRequest(args) {
+  const iparams = args.iparams || {};
+  const ticket = requestTicket(args);
+  const match = await runMatcher(ticket, iparams);
+
+  if (args.run_drift === false) {
+    return matchSummary(match);
+  }
+
+  const evidence = {
+    id: ticket.ticket_id || ticket.id,
+    responder_id: args.agent_id || args.responder_id || 'unknown',
+    replyText: requestReplyText(ticket)
+  };
+  const outcome = await afterMatch(match, ticket, evidence, scoringCfg(iparams), new Map())
+    .catch((err) => ({ driftError: errorText(err) }));
+
+  return Object.assign(matchSummary(match), {
+    drift: outcome.drift,
+    drift_error: outcome.driftError,
+    knowledge_gap: outcome.knowledgeGap
+  });
 }
 
 // What the board shows in its taxonomy panel: every label and every route
@@ -782,6 +1213,10 @@ exports = {
     return log('onTicketUpdate', handleTicketUpdate(payload));
   },
 
+  onExternalEventHandler: function (payload) {
+    return log('onExternalEvent', handleExternalEvent(payload || {}));
+  },
+
   listAlerts: function () {
     return respond(store.listOpenAlerts());
   },
@@ -828,6 +1263,24 @@ exports = {
   },
 
   ingestTicketById: function (args) {
-    return respond(ingestTicketById(args.ticketId, scoringCfg(args.iparams || {})));
+    const iparams = args.iparams || {};
+
+    return respond(ingestTicketById(args.ticketId, scoringCfg(iparams), iparams));
+  },
+
+  matchResolvedTicket: function (args) {
+    return respond(matchResolvedTicketRequest(args || {}));
+  },
+
+  indexKnowledgeBase: function (args) {
+    return respond(indexKnowledgeBase((args || {}).articles, (args || {}).iparams || {}));
+  },
+
+  listKnowledgeGaps: function () {
+    return respond(store.listKnowledgeGaps());
+  },
+
+  getMatchMetrics: function () {
+    return respond(store.getMatchMetrics());
   }
 };
