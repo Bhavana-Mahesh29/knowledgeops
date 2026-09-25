@@ -6,7 +6,8 @@
     "test": "node test.js && vitest run",
     "test:logic": "node test.js",
     "test:watch": "vitest",
-    "demo:match": "node scripts/match-demo.js"
+    "demo:match": "node scripts/match-demo.js",
+    "fdk-unit-test": "vitest run --coverage"
   },
   "dependencies": {},
   "devDependencies": {
