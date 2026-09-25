@@ -18,7 +18,7 @@ const { toCanonicalPath, missingEdges } = require('./lib/canonical');
 const { scoreCluster, shareOf, densityOf, DEFAULT_CFG } = require('./lib/scoring');
 const { redact } = require('./lib/redact');
 const { extractSteps } = require('./lib/extractor');
-const { draftAndValidate } = require('./lib/architect');
+const { draftAndValidate, draftGapArticle, validateGapArticle } = require('./lib/architect');
 const { validatePatch } = require('./lib/validator');
 const md = require('./lib/markdown');
 const store = require('./lib/store');
@@ -90,6 +90,15 @@ async function fdGetConversations(ticketId) {
 async function fdGetArticle(articleId) {
   const r = await $request.invokeTemplate('fdGetArticle', {
     context: { article_id: String(articleId) }
+  });
+
+  return JSON.parse(r.response);
+}
+
+async function fdCreateArticle(folderId, title, html, status) {
+  const r = await $request.invokeTemplate('fdCreateArticle', {
+    context: { folder_id: String(folderId) },
+    body: JSON.stringify({ title, description: html, status })
   });
 
   return JSON.parse(r.response);
@@ -466,6 +475,53 @@ async function recordKnowledgeGap(match, ticket) {
   return gap;
 }
 
+// A gap also goes on the board as an alert carrying a drafted new article,
+// so it can be approved into Freshdesk the same way a patch is. One alert per
+// ticket: re-ingesting refreshes an open draft but never resurrects one a
+// reviewer already approved or rejected.
+const GAP_FINDING = 'knowledge_gap';
+
+function gapAlertId(ticketId) {
+  return `gap-${ticketId}`;
+}
+
+async function raiseGapAlert(gap, evidence) {
+  const alertId = gapAlertId(gap.ticketId);
+  const existing = await store.getAlert(alertId);
+
+  if (existing !== null && existing.state !== 'open') {
+    return existing;
+  }
+
+  const steps = await extractSteps(gap.resolution || '').catch(() => []);
+  const draft = await draftGapArticle({ subject: gap.subject, resolution: gap.resolution, steps });
+  const alert = {
+    alertId,
+    articleId: null,
+    articleTitle: draft.title,
+    finding: GAP_FINDING,
+    band: 'gap',
+    ticketId: gap.ticketId,
+    subject: gap.subject,
+    resolutionNote: gap.resolution,
+    evidenceTicketIds: [gap.ticketId],
+    agents: evidence && evidence.responder_id !== undefined ? [String(evidence.responder_id)] : [],
+    patch: {
+      markdown: draft.markdown,
+      mode: draft.mode,
+      passed: draft.passed,
+      errors: draft.errors,
+      attempts: draft.attempts
+    },
+    detectedAt: gap.detectedAt,
+    state: 'open'
+  };
+
+  await store.saveAlert(alertId, alert);
+
+  return alert;
+}
+
 // ---------- Drift verdict for the terminal -------------------------------
 //
 // The ingest result is JSON for the board; this is the same outcome as a
@@ -611,9 +667,12 @@ async function matchOutcome(match, input, evidence, cfg, synced) {
   }
 
   if (match.classification === 'KNOWLEDGE_GAP') {
+    const gap = await recordKnowledgeGap(match, input);
+    const alert = await raiseGapAlert(gap, evidence);
+
     return {
-      knowledgeGap: await recordKnowledgeGap(match, input),
-      skipped: 'knowledge gap - no article describes this resolution'
+      knowledgeGap: Object.assign({ alertId: alert.alertId }, gap),
+      skipped: 'knowledge gap - no article describes this resolution; new article drafted for review'
     };
   }
 
@@ -942,7 +1001,52 @@ function requireAdmin(args) {
 
 // ---------- Approve / reject / edit --------------------------------------
 
-async function approveAlert(alertId, publishMode, actor) {
+function markApproved(alert, actor) {
+  alert.state = 'approved';
+  alert.approvedBy = actor;
+  alert.approvedAt = new Date().toISOString();
+
+  return store.saveAlert(alert.alertId, alert);
+}
+
+// A knowledge gap is approved into a brand-new Freshdesk article, filed in
+// the folder named in the app settings, and joins the knowledge base so the
+// next ticket like it matches instead of opening another gap.
+async function approveGap(alert, statusCode, folderId, actor) {
+  if (!String(folderId || '').trim()) {
+    throw new Error('cannot publish a new article: set "Folder for new articles" in the app settings');
+  }
+
+  const title = validateGapArticle(alert.patch.markdown).title || alert.articleTitle;
+  const created = await fdCreateArticle(String(folderId).trim(), title, md.markdownToHtml(alert.patch.markdown), statusCode);
+  const articleId = String(created.id);
+
+  await store.saveArticle(articleId, {
+    articleId,
+    source: 'freshdesk',
+    title,
+    category: '',
+    subcategory: '',
+    markdown: alert.patch.markdown,
+    documentedPath: md.documentedPathOf(alert.patch.markdown),
+    baselineReopenRate: 0.0
+  });
+
+  alert.articleId = articleId;
+  alert.articleTitle = title;
+  await markApproved(alert, actor);
+
+  return {
+    alertId: alert.alertId,
+    articleId,
+    created: true,
+    publishedStatus: statusCode,
+    published: statusCode === ARTICLE_PUBLISHED,
+    approvedBy: actor
+  };
+}
+
+async function approveAlert(alertId, publishMode, actor, folderId) {
   const alert = await store.getAlert(alertId);
 
   if (alert === null || !alert.patch || alert.patch.passed !== true) {
@@ -950,6 +1054,10 @@ async function approveAlert(alertId, publishMode, actor) {
   }
 
   const statusCode = publishMode === 'demo' ? ARTICLE_PUBLISHED : ARTICLE_DRAFT;
+
+  if (alert.finding === GAP_FINDING) {
+    return approveGap(alert, statusCode, folderId, actor);
+  }
 
   await fdUpdateArticle(alert.articleId, md.markdownToHtml(alert.patch.markdown), statusCode);
 
@@ -962,11 +1070,7 @@ async function approveAlert(alertId, publishMode, actor) {
   article.markdown = alert.patch.markdown;
   article.documentedPath = alert.pathSignature;
   await store.saveArticle(alert.articleId, article);
-
-  alert.state = 'approved';
-  alert.approvedBy = actor;
-  alert.approvedAt = new Date().toISOString();
-  await store.saveAlert(alertId, alert);
+  await markApproved(alert, actor);
 
   return {
     alertId,
@@ -1002,6 +1106,10 @@ async function updatePatch(alertId, markdown, actor) {
     throw new Error('cannot edit: that alert no longer exists');
   }
 
+  if (alert.finding === GAP_FINDING) {
+    return updateGapDraft(alert, markdown, actor);
+  }
+
   const article = await store.getArticle(alert.articleId);
 
   if (article === null) {
@@ -1020,6 +1128,26 @@ async function updatePatch(alertId, markdown, actor) {
   };
 
   await store.saveAlert(alertId, alert);
+
+  return alert;
+}
+
+// A new article has no baseline to diff against, so an edited gap draft is
+// checked for shape (title, numbered steps, verification) instead.
+async function updateGapDraft(alert, markdown, actor) {
+  const result = validateGapArticle(markdown);
+
+  alert.patch = {
+    markdown,
+    mode: 'manual',
+    passed: result.passed,
+    errors: result.errors,
+    attempts: 0,
+    editedBy: actor
+  };
+  alert.articleTitle = result.title || alert.articleTitle;
+
+  await store.saveAlert(alert.alertId, alert);
 
   return alert;
 }
@@ -1230,7 +1358,7 @@ exports = {
     const mode = args.publishMode || iparams.publish_mode || 'production';
 
     return respond(Promise.resolve(requireAdmin(args))
-      .then((actor) => approveAlert(args.alertId, mode, actor)));
+      .then((actor) => approveAlert(args.alertId, mode, actor, iparams.gap_folder_id)));
   },
 
   rejectAlert: function (args) {

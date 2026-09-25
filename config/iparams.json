@@ -44,6 +44,12 @@
     "options": ["production", "demo"],
     "default_value": "production"
   },
+  "gap_folder_id": {
+    "display_name": "Folder for new articles (knowledge gaps)",
+    "description": "Freshdesk solution folder id that approved knowledge-gap drafts are created in. Find it in the folder's URL under Solutions. Required only to approve a knowledge-gap draft.",
+    "type": "text",
+    "required": false
+  },
   "embedding_provider": {
     "display_name": "Embedding provider (ticket-to-article matching)",
     "description": "local = built-in deterministic embedder, no key or network needed. voyage = Voyage AI embeddings (needs the Voyage API key below). Changing provider re-embeds the knowledge base on the next match.",

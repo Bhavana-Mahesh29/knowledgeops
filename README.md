@@ -11,7 +11,10 @@ Every time a ticket is resolved or closed (`onTicketUpdate`):
 0. **Match** — `server/lib/matcher.js` decides which solution article the
    ticket was resolved with (see *Matching a resolved ticket to an article*
    below). A match goes on to step 1; a ticket no article describes is
-   recorded as a **knowledge gap** and never enters drift analysis.
+   recorded as a **knowledge gap** and never enters drift analysis. Instead
+   `server/lib/architect.js` drafts a new article from the resolution (Title,
+   Steps, Verification) and it goes on the board as a `knowledge_gap` alert;
+   approving it creates the article in Freshdesk through the Solutions API.
 1. **Redact** — `server/lib/redact.js` strips email, phone, Aadhaar (Verhoeff
    checked), PAN and agent sign-offs from the reply text. This runs before the
    text reaches any model or the datastore. Regex-based, not NER-grade.
@@ -231,6 +234,7 @@ to be one. Read it as an enablement gap rather than a documentation bug.
    | Demo mode | ON makes one ticket enough to raise an alert (see below) |
    | Provisional hedging | ON lets the bot answer with an unapproved path on Critical alerts |
    | Publish mode | `demo` publishes immediately, `production` saves a draft |
+   | Folder for new articles | Solution folder id that approved knowledge-gap drafts are created in |
 
    The install page must be saved at least once — the request templates read
    the domain and API key from there.
@@ -313,8 +317,8 @@ evidence and the proposed diff, and press **Approve & publish** — that is the
 step that writes to Freshdesk.
 
 A ticket is skipped (not an error) when it is not resolved/closed, when no
-article matches it (a knowledge gap, recorded for `listKnowledgeGaps`), or
-when matching is unavailable. The console says which, and logs the matching
+article matches it (a knowledge gap, recorded for `listKnowledgeGaps` and
+drafted into a new article on the board), or when matching is unavailable. The console says which, and logs the matching
 funnel as `[knowledgeops] match: {...}`.
 
 ## Tests

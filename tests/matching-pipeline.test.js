@@ -79,6 +79,7 @@ function createRequestApi({ gate, overrides } = {}) {
       ? Promise.resolve({ response: JSON.stringify(article) })
       : Promise.reject({ status: 404, response: '{"code":"not_found"}' })),
     fdUpdateArticle: () => Promise.resolve({ status: 200, response: '{}' }),
+    fdCreateArticle: () => Promise.resolve({ status: 201, response: JSON.stringify({ id: 777 }) }),
     voyageEmbeddings: (opts) => {
       const body = JSON.parse(opts.body);
 
@@ -260,6 +261,118 @@ describe('ticket-to-article matching in the server', () => {
     const gaps = await renderData.call(() => env.methods.listKnowledgeGaps({}));
 
     expect(gaps.map((g) => g.ticketId)).toEqual(['R-210']);
+  });
+
+  describe('knowledge-gap auto-drafting', () => {
+    const noMatch = () => ({ decision: 'NO_MATCH', article_id: null, confidence: 0.31, reason: 'none fits' });
+    const call = (env, name, args) => renderData.call(() => env.methods[name](Object.assign({ iparams: IPARAMS }, args)));
+
+    test('a gap is stored as an alert carrying a drafted new article', async () => {
+      const { env } = await serverWithKb({ gate: noMatch });
+      const result = await match(env, Object.assign({ agent_id: 320 }, ticketById('R-210')));
+
+      expect(result.knowledge_gap.alertId).toBe('gap-R-210');
+
+      const alerts = await call(env, 'listAlerts', {});
+      const gap = alerts.find((a) => a.alertId === 'gap-R-210');
+
+      expect(gap).toMatchObject({
+        finding: 'knowledge_gap',
+        band: 'gap',
+        ticketId: 'R-210',
+        articleId: null,
+        subject: 'Chargeback on a refund payment',
+        agents: ['320'],
+        state: 'open'
+      });
+      expect(gap.resolutionNote).toContain('signed contract');
+      expect(gap.patch).toMatchObject({ mode: 'template', passed: true });
+      expect(gap.patch.markdown).toMatch(/^# .+\n\n## Steps\n1\. /);
+      expect(gap.patch.markdown).toContain('## Verification\n- ');
+    });
+
+    test('the drafter uses Claude when it answers with a usable article', async () => {
+      const { env } = await serverWithKb({
+        gate: noMatch,
+        overrides: {
+          anthropicMessages: (opts) => {
+            const body = JSON.parse(opts.body);
+            const tool = body.tools && body.tools[0].name;
+
+            if (tool === 'record_relevance_decision') {
+              return Promise.resolve({ response: JSON.stringify({ content: [{ type: 'tool_use', name: tool, input: noMatch() }] }) });
+            }
+            if (tool === 'record_article') {
+              const input = { title: 'How to answer a chargeback', steps: ['Open the **Payments** dashboard', 'Upload the contract'], verification: ['The dispute shows evidence'] };
+
+              return Promise.resolve({ response: JSON.stringify({ content: [{ type: 'tool_use', name: tool, input }] }) });
+            }
+            return Promise.reject({ status: 401, response: 'no key' });
+          }
+        }
+      });
+
+      await match(env, ticketById('R-210'));
+
+      const gap = await call(env, 'getAlertDetail', { alertId: 'gap-R-210' });
+
+      expect(gap.articleTitle).toBe('How to answer a chargeback');
+      expect(gap.patch).toMatchObject({ mode: 'llm', passed: true });
+      expect(gap.patch.markdown).toBe('# How to answer a chargeback\n\n## Steps\n1. Open the **Payments** dashboard\n2. Upload the contract\n\n## Verification\n- The dispute shows evidence\n');
+    });
+
+    test('an edited draft is re-checked for title, steps and verification', async () => {
+      const { env } = await serverWithKb({ gate: noMatch });
+
+      await match(env, ticketById('R-210'));
+
+      const bad = await call(env, 'updatePatch', { alertId: 'gap-R-210', markdown: '# Title only' });
+
+      expect(bad.patch.passed).toBe(false);
+      expect(bad.patch.errors.join(' ')).toContain('Steps');
+
+      const good = await call(env, 'updatePatch', {
+        alertId: 'gap-R-210',
+        markdown: '# Respond to a chargeback\n\n## Steps\n1. Upload the contract.\n\n## Verification\n- Evidence is attached.'
+      });
+
+      expect(good.patch).toMatchObject({ passed: true, mode: 'manual' });
+      expect(good.articleTitle).toBe('Respond to a chargeback');
+    });
+
+    test('approving creates a new Freshdesk article in the configured folder', async () => {
+      const { env, requests } = await serverWithKb({ gate: noMatch });
+
+      await match(env, ticketById('R-210'));
+
+      const approved = await call(env, 'approveAlert', {
+        alertId: 'gap-R-210',
+        iparams: Object.assign({ gap_folder_id: ' 4200 ' }, IPARAMS)
+      });
+      const create = requests.calls.find((c) => c.template === 'fdCreateArticle');
+      const body = JSON.parse(create.options.body);
+
+      expect(approved).toMatchObject({ articleId: '777', created: true, published: true });
+      expect(create.options.context.folder_id).toBe('4200');
+      expect(body.status).toBe(2);
+      expect(body.description).toContain('<ol><li>');
+      expect(requests.calls.some((c) => c.template === 'fdUpdateArticle')).toBe(false);
+      expect(await call(env, 'listAlerts', {})).toEqual([]);
+      expect(JSON.parse(env.db.rows.get('articles:777').value)).toMatchObject({ articleId: '777', source: 'freshdesk' });
+
+      // Re-ingesting the same ticket does not bring an approved gap back.
+      await match(env, ticketById('R-210'));
+      expect(await call(env, 'listAlerts', {})).toEqual([]);
+    });
+
+    test('approving a gap without a folder configured says what to set', async () => {
+      const { env } = await serverWithKb({ gate: noMatch });
+
+      await match(env, ticketById('R-210'));
+
+      await expect(call(env, 'approveAlert', { alertId: 'gap-R-210' }))
+        .rejects.toMatchObject({ message: expect.stringContaining('Folder for new articles') });
+    });
   });
 
   test('no explicit article -> vector search -> no candidates -> KNOWLEDGE_GAP, Claude never called', async () => {

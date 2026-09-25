@@ -13,6 +13,7 @@
         "fdGetTicket": {},
         "fdGetConversations": {},
         "fdGetArticle": {},
+        "fdCreateArticle": {},
         "fdUpdateArticle": {},
         "voyageEmbeddings": {}
       },

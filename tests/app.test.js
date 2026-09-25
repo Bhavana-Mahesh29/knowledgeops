@@ -18,24 +18,27 @@ const ALERT = {
   patch: { passed: true, mode: 'template', attempts: 3, errors: [], markdown: '## Steps\n1. Go to **Reset Token**.' }
 };
 
+const GAP_ALERT = {
+  alertId: 'gap-R-210',
+  articleId: null,
+  articleTitle: 'How to respond to a chargeback',
+  finding: 'knowledge_gap',
+  band: 'gap',
+  ticketId: 'R-210',
+  subject: 'Chargeback on a refund payment',
+  resolutionNote: 'Uploaded the signed contract as evidence in the processor dashboard.',
+  evidenceTicketIds: ['R-210'],
+  agents: ['320'],
+  patch: {
+    passed: true, mode: 'template', attempts: 0, errors: [],
+    markdown: '# How to respond to a chargeback\n\n## Steps\n1. Upload the contract.\n\n## Verification\n- Dispute shows evidence.\n'
+  },
+  state: 'open'
+};
+
 const DEFAULT_RESPONSES = {
   listAlerts: [ALERT],
   getAlertDetail: ALERT,
-  listLearning: {
-    labels: [
-      { label: 'frobnicate', entries: [{ ticketId: '205', agentId: '320' }], promotedTo: null },
-      {
-        label: 'api details',
-        entries: [{ ticketId: '205', agentId: '320' }],
-        promotedTo: 'node_api_security',
-        promotedToLabel: 'API & Security Details'
-      }
-    ],
-    routes: [
-      { from: 'API & Security Details', to: 'Reset Security Token', tickets: 1, promoted: true }
-    ]
-  },
-  resetLearning: { aliases: 1, edges: 1 },
   approveAlert: {
     alertId: ALERT.alertId, articleId: '5001', published: true, publishedStatus: 2,
     approvedBy: 'lead@example.com'
@@ -52,10 +55,8 @@ const MARKUP = `
   <p id="status" class="status" hidden></p>
   <input id="ticketId" type="text" />
   <button id="ingest" type="button"></button>
-  <button id="forget" type="button"></button>
   <div id="board"></div>
   <div id="detail"></div>
-  <pre id="unknown"></pre>
 `;
 
 async function boot(overrides = {}, who = {}) {
@@ -108,39 +109,37 @@ describe('KnowledgeOps action board', () => {
     expect(client.events.on).toHaveBeenCalledWith('app.activated', expect.any(Function));
   });
 
-  test('renders one card per open alert and the unknown-label log', async () => {
+  test('renders a readable card per open alert', async () => {
     await boot();
-    await vi.waitFor(() => expect(byId('unknown').textContent).toContain('frobnicate'));
+    await vi.waitFor(() => expect(byId('board').querySelector('[data-alert-id]')).not.toBeNull());
 
     const cards = byId('board').querySelectorAll('[data-alert-id]');
+    const text = cards[0].textContent;
 
     expect(cards).toHaveLength(1);
-    expect(cards[0].textContent).toContain('Reset your security token');
-    expect(cards[0].textContent).toContain('CRITICAL');
-    expect(byId('unknown').textContent).toContain('frobnicate');
-    expect(byId('unknown').textContent).toContain('not recognised yet');
-    expect(byId('unknown').textContent).toContain('learned as API & Security Details');
-    expect(byId('unknown').textContent).toContain(
-      'route  API & Security Details \u2192 Reset Security Token'
-    );
+    expect(text).toContain('Reset your security token');
+    expect(text).toContain('High Knowledge Drift');
+    expect(text).not.toContain('CRITICAL');
+    expect(text).toContain('Step: Global Reset → Security / Authentication / Reset Token');
+    expect(text).toContain('Confirmed by 3 agents across 4 tickets (80% convergence)');
   });
 
-  test('resetting the learned graph reports what was dropped', async () => {
+  test('a warning band reads as emerging drift', async () => {
+    await boot({ listAlerts: [{ ...ALERT, band: 'warning' }] });
+    await vi.waitFor(() => expect(byId('board').textContent).toContain('Emerging Knowledge Drift'));
+  });
+
+  test('the taxonomy panel is gone and its endpoints are never called', async () => {
     const { invoke } = await boot();
 
-    byId('forget').click();
-    await vi.waitFor(() => expect(byId('status').textContent).toContain('Dropped 1 learned alias'));
-
-    expect(byId('status').textContent).toContain('1 learned route');
-    expect(invoke).toHaveBeenCalledWith('resetLearning', {});
+    expect(invoke).not.toHaveBeenCalledWith('listLearning', expect.anything());
+    expect(byId('forget')).toBeNull();
+    expect(byId('unknown')).toBeNull();
   });
 
   test('shows an empty state when there are no alerts', async () => {
-    await boot({ listAlerts: [], listLearning: { labels: [], routes: [] } });
-    await vi.waitFor(() => expect(byId('unknown').textContent).toBe('(none)'));
-
-    expect(byId('board').textContent).toContain('No open alerts');
-    expect(byId('unknown').textContent).toBe('(none)');
+    await boot({ listAlerts: [] });
+    await vi.waitFor(() => expect(byId('board').textContent).toContain('No open alerts'));
   });
 
   test('clicking a card loads the diff and enables Approve', async () => {
@@ -151,10 +150,52 @@ describe('KnowledgeOps action board', () => {
     await vi.waitFor(() => expect(byId('detail').textContent).toContain('Reset Token'));
 
     const detail = byId('detail');
+    const rows = detail.querySelectorAll('.path-row');
+    const labels = (sel) => [...detail.querySelectorAll(sel)].map((n) => n.textContent);
 
-    expect(detail.textContent).toContain('Settings → Security → Authentication → Reset Token');
-    expect(detail.textContent).toContain('80%');
+    expect(rows[0].textContent).toContain('Published Path');
+    expect(rows[1].textContent).toContain('Proposed Path');
+    expect(labels('.crumb.removed')).toEqual(['Global Reset']);
+    expect(labels('.crumb.added')).toEqual(['Security', 'Authentication', 'Reset Token']);
+    expect(detail.querySelector('.path-diff').compareDocumentPosition(detail.querySelector('pre')))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(detail.textContent).toContain('80% convergence');
     expect(detail.querySelector('[data-action="approve"]').disabled).toBe(false);
+    expect(byId('board').querySelector('.card.selected')).not.toBeNull();
+  });
+
+  test('a knowledge gap renders as a new-procedure card', async () => {
+    await boot({ listAlerts: [ALERT, GAP_ALERT] });
+    await vi.waitFor(() => expect(byId('board').querySelectorAll('[data-alert-id]')).toHaveLength(2));
+
+    const card = byId('board').querySelector('[data-alert-id="gap-R-210"]');
+
+    expect(card.textContent).toContain('Knowledge Gap: New procedure detected (Ticket #R-210)');
+    expect(card.textContent).toContain('How to respond to a chargeback');
+  });
+
+  test('reviewing a gap shows the resolution note beside the draft article', async () => {
+    const { invoke } = await boot({
+      listAlerts: [GAP_ALERT],
+      getAlertDetail: GAP_ALERT,
+      approveAlert: { alertId: 'gap-R-210', articleId: '777', created: true, published: false }
+    });
+
+    await vi.waitFor(() => expect(byId('board').querySelector('[data-alert-id]')).not.toBeNull());
+    byId('board').querySelector('[data-alert-id]').click();
+    await vi.waitFor(() => expect(byId('detail').querySelector('.gap-grid')).not.toBeNull());
+
+    const detail = byId('detail');
+
+    expect(detail.querySelector('.note').textContent).toContain('Uploaded the signed contract');
+    expect(detail.querySelector('pre').textContent).toContain('## Verification');
+    expect(detail.querySelector('.path-diff')).toBeNull();
+    expect(detail.querySelector('[data-action="edit"]')).not.toBeNull();
+    expect(detail.querySelector('[data-action="reject"]')).not.toBeNull();
+
+    detail.querySelector('[data-action="approve"]').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toContain('New article 777 created'));
+    expect(invoke).toHaveBeenCalledWith('approveAlert', { alertId: 'gap-R-210', actor: 'lead@example.com' });
   });
 
   test('Approve is disabled when the validator rejected the patch', async () => {
@@ -246,7 +287,7 @@ describe('KnowledgeOps action board', () => {
     await vi.waitFor(() => expect(byId('patchEdit')).not.toBeNull());
     byId('detail').querySelector('[data-action="save"]').click();
 
-    await vi.waitFor(() => expect(byId('status').textContent).toContain('does not validate'));
+    await vi.waitFor(() => expect(byId('status').textContent).toContain('does not pass the checks'));
     expect(byId('detail').querySelector('[data-action="approve"]').disabled).toBe(true);
   });
 

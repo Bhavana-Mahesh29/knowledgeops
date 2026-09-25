@@ -9,7 +9,10 @@
     "demo:match": "node scripts/match-demo.js",
     "fdk-unit-test": "vitest run --coverage"
   },
-  "dependencies": {},
+  "dependencies": {
+    "axios": "^1.20.0",
+    "csv-parser": "^3.2.1"
+  },
   "devDependencies": {
     "@vitest/coverage-v8": "~2.1.8",
     "jsdom": "~26.1.0",

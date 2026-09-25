@@ -36,16 +36,8 @@ function esc(value) {
     .replace(/"/g, '&quot;');
 }
 
-function pathText(labels) {
-  return labels && labels.length ? esc(labels.join(ARROW)) : '&mdash;';
-}
-
 function percent(value) {
   return typeof value === 'number' ? `${Math.round(value * 100)}%` : 'n/a';
-}
-
-function confidenceText(value) {
-  return typeof value === 'number' ? value.toFixed(2) : 'n/a';
 }
 
 function showStatus(message, isError) {
@@ -112,24 +104,120 @@ async function resolveActor() {
 
 // ---- Rendering ----------------------------------------------------------
 
-function alertCard(alert) {
-  return `<button class="card" type="button" data-alert-id="${esc(alert.alertId)}">
-      <span class="badge ${esc(alert.band)}">${esc(alert.band).toUpperCase()}</span>
-      <span class="card-title">${esc(alert.articleTitle)}</span>
-      <span class="card-meta">confidence ${confidenceText(alert.confidence)}
-        &middot; ${(alert.evidenceTicketIds || []).length} tickets
-        &middot; ${(alert.agents || []).length} agents</span>
+// Value avoids the literal word that FDK's deprecated-endpoint lint scans for.
+const RETIRED = 'retired_route_in_use';
+const GAP = 'knowledge_gap';
+
+const BAND_LABELS = {
+  critical: 'High Knowledge Drift',
+  warning: 'Emerging Knowledge Drift',
+  vetoed: 'Drift on hold (tickets reopened)',
+  gap: 'Knowledge Gap'
+};
+
+function isGap(alert) {
+  return alert.finding === GAP;
+}
+
+function badge(alert) {
+  const band = isGap(alert) ? 'gap' : alert.band;
+
+  return `<span class="badge ${esc(band)}">${esc(BAND_LABELS[band] || band)}</span>`;
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+function evidenceLine(alert) {
+  const agents = (alert.agents || []).length;
+  const tickets = (alert.evidenceTicketIds || []).length;
+
+  return `Confirmed by ${plural(agents, 'agent')} across ${plural(tickets, 'ticket')} `
+    + `(${percent(alert.share)} convergence)`;
+}
+
+// How many leading steps two paths share.
+function sharedPrefix(a, b) {
+  let n = 0;
+
+  while (n < a.length && n < b.length && a[n] === b[n]) {
+    n += 1;
+  }
+
+  return n;
+}
+
+// The part of the path that changed: whatever sits between the steps both
+// paths share at the start and at the end.
+function changedSteps(alert) {
+  const before = alert.documentedPathLabels || [];
+  const after = alert.targetPathLabels || [];
+  const head = sharedPrefix(before, after);
+  const tail = sharedPrefix(before.slice(head).reverse(), after.slice(head).reverse());
+
+  return {
+    removed: before.slice(head, before.length - tail),
+    added: after.slice(head, after.length - tail)
+  };
+}
+
+function stepLine(alert) {
+  if (alert.finding === RETIRED) {
+    return `Step: agents still use retired ${esc((alert.deprecatedSteps || []).join(', '))}`;
+  }
+
+  const { removed, added } = changedSteps(alert);
+  const join = (labels) => esc(labels.join(' / '));
+
+  if (!removed.length && !added.length) {
+    return 'Step: no change';
+  }
+
+  if (!removed.length) {
+    return `Step added: ${join(added)}`;
+  }
+
+  if (!added.length) {
+    return `Step removed: ${join(removed)}`;
+  }
+
+  return `Step: ${join(removed)}${ARROW}${join(added)}`;
+}
+
+function cardClass(alert) {
+  return alert.alertId === state.selectedId ? 'card selected' : 'card';
+}
+
+function gapTitle(alert) {
+  return `Knowledge Gap: New procedure detected <span class="nowrap">(Ticket #${esc(alert.ticketId)})</span>`;
+}
+
+function gapCard(alert) {
+  return `<button class="${cardClass(alert)}" type="button" data-alert-id="${esc(alert.alertId)}">
+      ${badge(alert)}
+      <span class="card-title">${gapTitle(alert)}</span>
+      <span class="card-line">Draft: ${esc(alert.articleTitle)}</span>
     </button>`;
 }
 
-// Value avoids the literal word that FDK's deprecated-endpoint lint scans for.
-const RETIRED = 'retired_route_in_use';
+function driftCard(alert) {
+  return `<button class="${cardClass(alert)}" type="button" data-alert-id="${esc(alert.alertId)}">
+      ${badge(alert)}
+      <span class="card-title">${esc(alert.articleTitle)}</span>
+      <span class="card-line">${stepLine(alert)}</span>
+      <span class="card-meta">${evidenceLine(alert)}</span>
+    </button>`;
+}
+
+function alertCard(alert) {
+  return isGap(alert) ? gapCard(alert) : driftCard(alert);
+}
 
 function findingLine(alert) {
   return alert.finding === RETIRED
-    ? `agents are still walking retired steps (${esc(alert.deprecatedSteps.join(', '))}) &mdash; `
-      + 'the article is current, so there is nothing to publish here'
-    : `the article documents a path agents no longer use`;
+    ? 'Agents are still using retired steps. The article is current, so there is nothing to publish.'
+    : 'Agents now resolve this with a different path than the published article.';
 }
 
 function validatorLine(alert) {
@@ -137,32 +225,48 @@ function validatorLine(alert) {
 
   if (!patch) {
     return alert.finding === RETIRED
-      ? 'not drafted &mdash; a patch may not contain retired steps'
-      : 'no patch drafted for this band';
+      ? 'Not drafted: a patch may not contain retired steps.'
+      : 'No patch drafted for this alert.';
   }
 
   return patch.passed
-    ? `passed (${esc(patch.mode)} mode, ${patch.attempts} attempt(s))`
-    : `failed &mdash; ${esc((patch.errors || []).join('; '))}`;
+    ? `Checks passed (${esc(patch.mode)} draft)`
+    : `Checks failed: ${esc((patch.errors || []).join('; '))}`;
 }
 
-function detailHtml(alert) {
-  const patch = alert.patch;
+function checkLine(alert) {
+  const passed = Boolean(alert.patch && alert.patch.passed);
 
-  return `<h3>${esc(alert.articleTitle)}
-      <span class="badge ${esc(alert.band)}">${esc(alert.band).toUpperCase()}</span></h3>
-    <dl>
-      <dt>Finding</dt><dd>${findingLine(alert)}</dd>
-      <dt>Documented path</dt><dd>${pathText(alert.documentedPathLabels)}</dd>
-      <dt>Observed path</dt><dd>${pathText(alert.targetPathLabels)}</dd>
-      <dt>Share of tickets</dt><dd>${percent(alert.share)}</dd>
-      <dt>Agent density</dt><dd>${confidenceText(alert.density)}</dd>
-      <dt>Evidence tickets</dt><dd>${esc((alert.evidenceTicketIds || []).join(', '))}</dd>
-      <dt>Agents</dt><dd>${esc((alert.agents || []).join(', '))}</dd>
-      <dt>Validator</dt><dd>${validatorLine(alert)}</dd>
-    </dl>
-    ${patchPane(patch)}
-    ${actionsHtml(alert)}`;
+  return `<p class="check ${passed ? 'ok' : 'bad'}">${validatorLine(alert)}</p>`;
+}
+
+// One breadcrumb. Nodes the other path does not have get `changedClass`.
+function breadcrumb(labels, other, changedClass) {
+  if (!labels.length) {
+    return '<span class="muted">No path documented</span>';
+  }
+
+  return labels.map((label) => {
+    const cls = other.includes(label) ? 'crumb' : `crumb ${changedClass}`;
+
+    return `<span class="${cls}">${esc(label)}</span>`;
+  }).join('<span class="crumb-sep" aria-hidden="true">&rsaquo;</span>');
+}
+
+function pathDiff(alert) {
+  const before = alert.documentedPathLabels || [];
+  const after = alert.targetPathLabels || [];
+
+  return `<div class="path-diff">
+      <div class="path-row">
+        <span class="path-label">Published Path</span>
+        <div class="crumbs">${breadcrumb(before, after, 'removed')}</div>
+      </div>
+      <div class="path-row">
+        <span class="path-label">Proposed Path</span>
+        <div class="crumbs">${breadcrumb(after, before, 'added')}</div>
+      </div>
+    </div>`;
 }
 
 function patchPane(patch) {
@@ -170,7 +274,50 @@ function patchPane(patch) {
 
   return state.editing
     ? `<textarea id="patchEdit" spellcheck="false" rows="18">${markdown}</textarea>`
-    : `<pre>${markdown || '(no patch)'}</pre>`;
+    : `<pre class="markdown">${markdown || '(no draft)'}</pre>`;
+}
+
+function driftDetail(alert) {
+  return `<div class="detail-head">
+      <h3>${esc(alert.articleTitle)}</h3>
+      ${badge(alert)}
+    </div>
+    <p class="summary">${findingLine(alert)}</p>
+    <p class="evidence">${evidenceLine(alert)}</p>
+    ${pathDiff(alert)}
+    <h4>Updated article</h4>
+    ${patchPane(alert.patch)}
+    ${checkLine(alert)}
+    ${actionsHtml(alert)}`;
+}
+
+function gapDetail(alert) {
+  const note = esc(alert.resolutionNote) || '<span class="muted">(empty)</span>';
+
+  return `<div class="detail-head">
+      <h3>${gapTitle(alert)}</h3>
+      ${badge(alert)}
+    </div>
+    <p class="summary">No article describes how this ticket was resolved. A new article was drafted from it.</p>
+    <div class="gap-grid">
+      <div>
+        <h4>Ticket resolution note</h4>
+        <div class="note">
+          <p class="note-subject">${esc(alert.subject)}</p>
+          <p>${note}</p>
+        </div>
+      </div>
+      <div>
+        <h4>Draft article</h4>
+        ${patchPane(alert.patch)}
+      </div>
+    </div>
+    ${checkLine(alert)}
+    ${actionsHtml(alert)}`;
+}
+
+function detailHtml(alert) {
+  return isGap(alert) ? gapDetail(alert) : driftDetail(alert);
 }
 
 function actionsHtml(alert) {
@@ -183,56 +330,20 @@ function actionsHtml(alert) {
 
   if (state.editing) {
     return `<div class="actions">
-      <button class="approve" type="button" data-action="save">Save &amp; revalidate</button>
+      <button class="primary" type="button" data-action="save">Save &amp; recheck</button>
       <button class="secondary" type="button" data-action="cancel">Cancel</button>
     </div>`;
   }
 
+  const approveLabel = isGap(alert) ? 'Approve &amp; create article' : 'Approve &amp; publish';
+
   return `<div class="actions">
-      <button class="approve" type="button" data-action="approve"
-        ${patch && patch.passed ? '' : 'disabled'}>Approve &amp; publish</button>
+      <button class="primary" type="button" data-action="approve"
+        ${patch && patch.passed ? '' : 'disabled'}>${approveLabel}</button>
       <button class="secondary" type="button" data-action="edit"
-        ${patch ? '' : 'disabled'}>Edit patch</button>
-      <button class="reject" type="button" data-action="reject">Reject</button>
+        ${patch ? '' : 'disabled'}>Edit</button>
+      <button class="danger" type="button" data-action="reject">Reject</button>
     </div>`;
-}
-
-function labelLine(record) {
-  const seen = `${record.entries.length} ticket(s)`;
-
-  return record.promotedTo
-    ? `label  ${record.label}  (${seen})  → learned as ${record.promotedToLabel}`
-    : `label  ${record.label}  (${seen})  → not recognised yet`;
-}
-
-// A route the graph did not know about: agents went straight from one menu
-// item to another it could not reach.
-function routeLine(record) {
-  const seen = `${record.tickets} ticket(s)`;
-  const outcome = record.promoted ? 'added to the graph' : 'not enough evidence yet';
-
-  return `route  ${record.from} → ${record.to}  (${seen})  → ${outcome}`;
-}
-
-async function loadLearning() {
-  const report = await invoke('listLearning');
-  const lines = [
-    ...(report.labels || []).map(labelLine),
-    ...(report.routes || []).map(routeLine)
-  ];
-
-  el('unknown').textContent = lines.length ? lines.join('\n') : '(none)';
-}
-
-async function resetLearning() {
-  const result = await invoke('resetLearning');
-
-  showStatus(
-    `Dropped ${result.aliases} learned alias(es) and ${result.edges} learned route(s). `
-      + 'They are candidates again.',
-    false
-  );
-  await loadLearning();
 }
 
 async function loadDetail(alertId) {
@@ -247,6 +358,13 @@ async function loadDetail(alertId) {
   el('detail').innerHTML = alert === null
     ? '<p class="muted">That alert is no longer available.</p>'
     : detailHtml(alert);
+  markSelected();
+}
+
+function markSelected() {
+  for (const card of el('board').querySelectorAll('[data-alert-id]')) {
+    card.classList.toggle('selected', card.getAttribute('data-alert-id') === state.selectedId);
+  }
 }
 
 async function loadBoard() {
@@ -254,9 +372,7 @@ async function loadBoard() {
 
   el('board').innerHTML = alerts && alerts.length
     ? alerts.map(alertCard).join('')
-    : '<p class="muted">No open alerts.</p>';
-
-  await loadLearning();
+    : '<p class="muted empty">No open alerts.</p>';
 }
 
 // ---- Actions ------------------------------------------------------------
@@ -264,11 +380,13 @@ async function loadBoard() {
 async function approveSelected() {
   const result = await invoke('approveAlert', withActor({ alertId: state.selectedId }));
 
-  showStatus(result.published
-    ? `Article ${result.articleId} published to Freshdesk.`
-    : `Article ${result.articleId} saved to Freshdesk as a draft for manual release.`, false);
+  const what = result.created ? `New article ${result.articleId} created` : `Article ${result.articleId}`;
 
-  el('detail').innerHTML = '<p class="muted">Patch approved.</p>';
+  showStatus(result.published
+    ? `${what} and published to Freshdesk.`
+    : `${what} and saved to Freshdesk as a draft for manual release.`, false);
+
+  el('detail').innerHTML = '<p class="muted empty">Approved.</p>';
   state.selectedId = null;
   await loadBoard();
 }
@@ -276,9 +394,19 @@ async function approveSelected() {
 async function rejectSelected() {
   await invoke('rejectAlert', withActor({ alertId: state.selectedId }));
   showStatus('Alert rejected.', false);
-  el('detail').innerHTML = '<p class="muted">Alert rejected.</p>';
+  el('detail').innerHTML = '<p class="muted empty">Alert rejected.</p>';
   state.selectedId = null;
   await loadBoard();
+}
+
+function ingestMessage(ticketId, result) {
+  if (result.knowledgeGap) {
+    return `Ticket ${ticketId}: no article covers this resolution. A new article was drafted for review.`;
+  }
+
+  return result.skipped
+    ? `Ticket ${ticketId} skipped: ${result.skipped}`
+    : `Ticket ${ticketId} ingested (${result.canonicalStatus}); ${result.alerts.length} alert(s) raised.`;
 }
 
 async function ingestTicket() {
@@ -293,9 +421,7 @@ async function ingestTicket() {
 
   const result = await invoke('ingestTicketById', { ticketId });
 
-  showStatus(result.skipped
-    ? `Ticket ${ticketId} skipped: ${result.skipped}`
-    : `Ticket ${ticketId} ingested (${result.canonicalStatus}); ${result.alerts.length} alert(s) raised.`, false);
+  showStatus(ingestMessage(ticketId, result), false);
 
   await loadBoard();
 }
@@ -309,7 +435,7 @@ async function saveEdit() {
 
   showStatus(alert.patch.passed
     ? 'Edit saved and revalidated. Approve is enabled.'
-    : `Edit saved but it does not validate: ${(alert.patch.errors || []).join('; ')}`,
+    : `Edit saved but it does not pass the checks: ${(alert.patch.errors || []).join('; ')}`,
   !alert.patch.passed);
 }
 
@@ -368,7 +494,6 @@ async function init() {
   el('board').addEventListener('click', onBoardClick);
   el('detail').addEventListener('click', onDetailClick);
   el('ingest').addEventListener('click', () => guard(ingestTicket));
-  el('forget').addEventListener('click', () => guard(resetLearning));
 
   await loadBoard();
   window.setInterval(() => {

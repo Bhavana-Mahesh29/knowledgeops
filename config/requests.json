@@ -45,6 +45,17 @@
       }
     }
   },
+  "fdCreateArticle": {
+    "schema": {
+      "method": "POST",
+      "host": "<%= iparam.freshdesk_domain %>",
+      "path": "/api/v2/solutions/folders/<%= context.folder_id %>/articles",
+      "headers": {
+        "Authorization": "Basic <%= encode(iparam.freshdesk_api_key + ':X') %>",
+        "content-type": "application/json"
+      }
+    }
+  },
   "fdUpdateArticle": {
     "schema": {
       "method": "PUT",

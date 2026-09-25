@@ -148,7 +148,161 @@ async function draftAndValidate(articleMd, targetPathNodes, evidence, maxLlmAtte
   };
 }
 
-const api = { draftAndValidate, templatePatch, stepsBodyRange };
+// ---- Knowledge gaps: a new article from one resolution ------------------
+//
+// A gap has no baseline article, so there is nothing for validatePatch to
+// diff against. The draft is instead held to a fixed shape - a title, a
+// numbered Steps section and a Verification section - which is what the
+// reviewer edits and what gets published as a new Freshdesk article.
+
+const GAP_TOOL_NAME = 'record_article';
+const VERIFICATION = 'Verification';
+
+const GAP_SYSTEM = `You turn one resolved support ticket into a short, new knowledge-base article.
+Rules:
+- Use ONLY what the resolution says was done. Do not invent menus, settings or policies.
+- title: an imperative "How to ..." title, under 70 characters.
+- steps: the procedure in order, one action per step, written to the customer or agent doing it.
+  Wrap navigation menu items in **bold**; buttons and fields in *italics*.
+- verification: how to confirm the procedure worked (1-3 short items).`;
+
+const GAP_TOOL = {
+  name: GAP_TOOL_NAME,
+  description: 'Record the drafted knowledge-base article.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      steps: { type: 'array', items: { type: 'string' } },
+      verification: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['title', 'steps', 'verification']
+  }
+};
+
+function gapPrompt(gap) {
+  const menus = (gap.steps || []).length ? `\nMenu items the agent mentioned, in order: ${gap.steps.join(` ${ARROW} `)}` : '';
+
+  return `Ticket subject: ${gap.subject || '(none)'}\n`
+    + `Resolution note:\n${gap.resolution || '(none)'}${menus}\n\n`
+    + 'Draft the article.';
+}
+
+async function callGapLLM(gap) {
+  const body = {
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    system: GAP_SYSTEM,
+    tools: [GAP_TOOL],
+    tool_choice: { type: 'tool', name: GAP_TOOL_NAME },
+    messages: [{ role: 'user', content: gapPrompt(gap) }]
+  };
+
+  const response = await $request.invokeTemplate('anthropicMessages', {
+    body: JSON.stringify(body)
+  });
+  const data = JSON.parse(response.response);
+  const block = (data.content || []).find((b) => b.type === 'tool_use' && b.name === GAP_TOOL_NAME);
+
+  return block ? block.input : null;
+}
+
+function sentencesOf(text) {
+  return String(text || '')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim().replace(/[.!?]+$/, ''))
+    .filter((s) => s !== '');
+}
+
+function capitalise(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// Deterministic fallback: the resolution's sentences become the steps, with
+// any menu path the extractor found as the first one.
+function templateGapArticle(gap) {
+  const steps = sentencesOf(gap.resolution).map(capitalise);
+  const menus = gap.steps || [];
+
+  if (menus.length) {
+    steps.unshift(`Go to ${menus.map((l) => `**${l}**`).join(` ${ARROW} `)}`);
+  }
+
+  return {
+    title: `How to resolve: ${String(gap.subject || 'untitled issue').trim()}`,
+    steps,
+    verification: ['Confirm with the customer that the issue is resolved.']
+  };
+}
+
+function gapMarkdown(article) {
+  const steps = article.steps.map((s, i) => `${i + 1}. ${String(s).trim().replace(/^\d+\.\s*/, '')}`);
+  const checks = article.verification.map((v) => `- ${String(v).trim().replace(/^[-*]\s*/, '')}`);
+
+  return `# ${String(article.title).trim()}\n\n## ${STEPS}\n${steps.join('\n')}\n\n## ${VERIFICATION}\n${checks.join('\n')}\n`;
+}
+
+// Parses a (possibly hand-edited) gap draft back into its parts and says what
+// is missing. A draft that fails cannot be approved.
+function validateGapArticle(markdown) {
+  const text = String(markdown || '');
+  const titleLine = text.split('\n').find((l) => /^#\s+\S/.test(l));
+  const title = titleLine ? titleLine.replace(/^#\s+/, '').trim() : '';
+  const section = (name) => {
+    const m = new RegExp(`(?:^|\\n)## ${name}[ \\t]*\\n([\\s\\S]*?)(?=\\n## |$)`).exec(text);
+
+    return m ? m[1] : '';
+  };
+  const steps = section(STEPS).split('\n').filter((l) => /^\s*\d+\.\s+\S/.test(l));
+  const verification = section(VERIFICATION).split('\n').filter((l) => l.trim() !== '');
+  const errors = [];
+
+  if (!title) {
+    errors.push('missing a "# Title" line');
+  }
+  if (!steps.length) {
+    errors.push(`the "## ${STEPS}" section needs at least one numbered step`);
+  }
+  if (!verification.length) {
+    errors.push(`the "## ${VERIFICATION}" section is empty or missing`);
+  }
+
+  return { passed: errors.length === 0, errors, title };
+}
+
+function usableDraft(draft) {
+  return draft !== null && typeof draft.title === 'string' && draft.title.trim() !== ''
+    && Array.isArray(draft.steps) && draft.steps.length > 0
+    && Array.isArray(draft.verification) && draft.verification.length > 0;
+}
+
+// gap: { subject, resolution, steps } - resolution already redacted.
+async function draftGapArticle(gap) {
+  const viaModel = await callGapLLM(gap).catch(() => null);
+  const mode = usableDraft(viaModel) ? 'llm' : 'template';
+  const article = mode === 'llm' ? viaModel : templateGapArticle(gap);
+  const markdown = gapMarkdown(article);
+  const result = validateGapArticle(markdown);
+
+  return {
+    title: result.title,
+    markdown,
+    mode,
+    passed: result.passed,
+    errors: result.errors,
+    attempts: mode === 'llm' ? 1 : 0
+  };
+}
+
+const api = {
+  draftAndValidate,
+  templatePatch,
+  stepsBodyRange,
+  draftGapArticle,
+  templateGapArticle,
+  validateGapArticle,
+  gapMarkdown
+};
 
 // FDK's serverless sandbox exposes `exports` but no `module`; plain Node needs
 // `module.exports`. Supporting both keeps these files loadable by `node test.js`.
