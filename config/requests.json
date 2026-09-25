@@ -67,6 +67,21 @@
       }
     }
   },
+  "vobizMakeCall": {
+    "schema": {
+      "method": "POST",
+      "host": "api.vobiz.ai",
+      "path": "/api/v1/Account/<%= context.auth_id %>/Call/",
+      "headers": {
+        "X-Auth-ID": "<%= iparam.vobiz_auth_id %>",
+        "X-Auth-Token": "<%= iparam.vobiz_auth_token %>",
+        "content-type": "application/json"
+      }
+    },
+    "options": {
+      "maxAttempts": 1
+    }
+  },
   "voyageEmbeddings": {
     "schema": {
       "method": "POST",

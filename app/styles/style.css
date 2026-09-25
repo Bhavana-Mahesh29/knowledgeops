@@ -257,3 +257,13 @@ textarea {
   color: var(--text);
   resize: vertical;
 }
+
+.call-note {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: var(--green-bg);
+  color: var(--green-text);
+}

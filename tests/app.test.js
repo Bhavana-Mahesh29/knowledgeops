@@ -164,6 +164,32 @@ describe('KnowledgeOps action board', () => {
     expect(byId('board').querySelector('.card.selected')).not.toBeNull();
   });
 
+  test('the review pane says when the admin was phoned about a high drift', async () => {
+    const called = { ...ALERT, adminCalls: [{ placed: true, to: '+919800000001', at: '2026-09-26T10:42:00Z' }] };
+
+    await boot({ listAlerts: [called], getAlertDetail: called });
+    await vi.waitFor(() => expect(byId('board').querySelector('[data-alert-id]')).not.toBeNull());
+    byId('board').querySelector('[data-alert-id]').click();
+
+    await vi.waitFor(() => expect(byId('detail').querySelector('.call-note')).not.toBeNull());
+    expect(byId('detail').querySelector('.call-note').textContent).toContain('Admin alerted by phone');
+  });
+
+  test('approving reports the department-head call', async () => {
+    await boot({
+      approveAlert: {
+        alertId: ALERT.alertId, articleId: '5001', published: true,
+        deptCall: { placed: true, team: 'IT Support', to: '+919800000002' }
+      }
+    });
+    await vi.waitFor(() => expect(byId('board').querySelector('[data-alert-id]')).not.toBeNull());
+    byId('board').querySelector('[data-alert-id]').click();
+    await vi.waitFor(() => expect(byId('detail').querySelector('[data-action="approve"]')).not.toBeNull());
+
+    byId('detail').querySelector('[data-action="approve"]').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toContain('The IT Support lead is being called'));
+  });
+
   test('a knowledge gap renders as a new-procedure card', async () => {
     await boot({ listAlerts: [ALERT, GAP_ALERT] });
     await vi.waitFor(() => expect(byId('board').querySelectorAll('[data-alert-id]')).toHaveLength(2));

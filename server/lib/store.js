@@ -186,6 +186,16 @@ async function clearOpenAlertsForArticle(articleId) {
   }
 }
 
+// ---- Phone calls placed -------------------------------------------------
+
+function getCallRecord(key) {
+  return dbGet('calls', key);
+}
+
+function saveCallRecord(key, record) {
+  return dbSet('calls', key, record);
+}
+
 // ---- Unknown labels (Taxonomy Mutation Warning - lite) -----------------
 
 // Sightings are deduplicated by ticket: re-simulating the same event must not
@@ -336,6 +346,8 @@ const api = {
   getAlert,
   listOpenAlerts,
   clearOpenAlertsForArticle,
+  getCallRecord,
+  saveCallRecord,
   saveUnknownLabel,
   listUnknownLabels,
   markUnknownLabelPromoted,

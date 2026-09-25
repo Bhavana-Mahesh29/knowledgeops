@@ -28,6 +28,7 @@ const { buildKnowledgeIndex } = require('./lib/vectorstore');
 const { judgeRelevance } = require('./lib/relevance');
 const { matchResolvedTicket } = require('./lib/matcher');
 const { buildResolutionQuery, normaliseKbArticle } = require('./lib/query');
+const voice = require('./lib/voice');
 
 const ARROW = '\u2192';
 
@@ -125,6 +126,15 @@ function fdUpdateArticle(articleId, html, status) {
 // Freshdesk's article payload carries category and folder ids, not names, so
 // the category labels matching uses (set through indexKnowledgeBase) are
 // carried over from the stored copy rather than wiped by each sync.
+// Freshdesk's folder/category id when it sent one, else what we had.
+function idOr(remote, known) {
+  if (remote !== undefined && remote !== null) {
+    return String(remote);
+  }
+
+  return known || '';
+}
+
 async function syncArticle(articleId) {
   const remote = await fdGetArticle(articleId);
   const known = (await store.getArticle(articleId)) || {};
@@ -139,6 +149,8 @@ async function syncArticle(articleId) {
     title: remote.title || `Article ${articleId}`,
     category: known.category || '',
     subcategory: known.subcategory || '',
+    folderId: idOr(remote.folder_id, known.folderId),
+    categoryId: idOr(remote.category_id, known.categoryId),
     markdown,
     documentedPath: md.documentedPathOf(markdown),
     baselineReopenRate: 0.0
@@ -653,8 +665,12 @@ async function runDrift(ticket, replyText, match, cfg, synced) {
 // a ticket against an article that does not describe what was done would
 // manufacture drift. Anything else (no resolution, matching unavailable)
 // concludes nothing and records nothing.
-async function afterMatch(match, input, evidence, cfg, synced) {
+async function afterMatch(match, input, evidence, cfg, synced, iparams) {
   const outcome = await matchOutcome(match, input, evidence, cfg, synced);
+
+  if (outcome.drift) {
+    outcome.drift.adminCalls = await callAdminAboutCriticalAlerts(outcome.drift.alerts, iparams || {});
+  }
 
   console.info(driftReport(evidence.id, outcome));
 
@@ -710,7 +726,7 @@ async function ingestTicket(ticket, cfg, iparams) {
     responder_id: ticket.responder_id,
     replyText: recentReplyText(input.conversation)
   };
-  const outcome = await afterMatch(match, input, evidence, cfg, synced);
+  const outcome = await afterMatch(match, input, evidence, cfg, synced, iparams);
 
   return Object.assign({ ticketId: ticket.id }, outcome.drift, {
     match: matchSummary(match),
@@ -878,6 +894,93 @@ async function rescoreArticle(article, cfg = DEFAULT_CFG) {
   return raised;
 }
 
+// ---------- Phone calls ----------------------------------------------------
+//
+// Every rescore replaces an article's alerts with fresh ones under new ids,
+// so "already called about this" is keyed on what the alert is about - the
+// article and the path agents converged on - not on the alert id. Otherwise
+// each further ticket on the same drift would ring the admin again.
+
+function pathKey(path) {
+  let h = 5381;
+
+  for (const ch of JSON.stringify(path || [])) {
+    h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0;
+  }
+
+  return h.toString(36);
+}
+
+async function callAdminAboutAlert(alertId, iparams) {
+  const alert = await store.getAlert(alertId);
+
+  if (alert === null) {
+    return null;
+  }
+
+  const key = `drift:${alert.articleId}:${pathKey(alert.pathSignature)}`;
+  const earlier = await store.getCallRecord(key);
+  const calls = earlier || await voice.callAdmins(iparams, voice.driftMessage(alert));
+
+  if (earlier === null && calls.some((c) => c.placed)) {
+    await store.saveCallRecord(key, calls);
+  }
+
+  alert.adminCalls = calls;
+  await store.saveAlert(alert.alertId, alert);
+  logAdminCalls(alertId, calls, earlier !== null);
+
+  return { alertId, calls, repeat: earlier !== null };
+}
+
+function logAdminCalls(alertId, calls, repeat) {
+  const note = repeat ? ' (already called about this drift)' : '';
+
+  for (const c of calls) {
+    const outcome = c.placed ? `placed to ${c.to}` : `not placed - ${c.reason}`;
+
+    console.info(`[knowledgeops] admin call for alert ${alertId}: ${outcome}${note}`);
+  }
+}
+
+// Only high drift rings a phone; an emerging drift waits on the board.
+async function callAdminAboutCriticalAlerts(raised, iparams) {
+  if (!voice.voiceEnabled(iparams)) {
+    return [];
+  }
+
+  const out = [];
+
+  for (const summary of raised || []) {
+    if (summary.band === 'critical') {
+      out.push(await callAdminAboutAlert(summary.alertId, iparams));
+    }
+  }
+
+  return out.filter((r) => r !== null);
+}
+
+// After an approval reaches Freshdesk, the head of the department that owns
+// the article is told what changed.
+async function callDeptHead(alertId, result, iparams) {
+  if (!voice.voiceEnabled(iparams)) {
+    return { placed: false, reason: 'phone calls are not set up' };
+  }
+
+  const alert = await store.getAlert(alertId);
+  const article = (await store.getArticle(result.articleId)) || {};
+  const head = voice.deptHeadFor(article, iparams.dept_heads);
+  const call = head === null
+    ? { placed: false, reason: 'no department head matches this article - add its folder or category to "Department heads"' }
+    : Object.assign({ team: head.team }, await voice.placeCall(iparams, head.phone, voice.updateMessage(alert, head, result.published)));
+
+  alert.deptCall = call;
+  await store.saveAlert(alertId, alert);
+  console.info(`[knowledgeops] department call for article ${result.articleId}: ${call.placed ? `placed to the ${call.team} lead` : `not placed - ${call.reason}`}`);
+
+  return call;
+}
+
 // ---------- Freshness -----------------------------------------------------
 
 function bySeverity(a, b) {
@@ -1012,13 +1115,15 @@ function markApproved(alert, actor) {
 // A knowledge gap is approved into a brand-new Freshdesk article, filed in
 // the folder named in the app settings, and joins the knowledge base so the
 // next ticket like it matches instead of opening another gap.
-async function approveGap(alert, statusCode, folderId, actor) {
-  if (!String(folderId || '').trim()) {
+async function approveGap(alert, statusCode, folderSetting, actor) {
+  const folderId = String(folderSetting || '').trim();
+
+  if (!folderId) {
     throw new Error('cannot publish a new article: set "Folder for new articles" in the app settings');
   }
 
   const title = validateGapArticle(alert.patch.markdown).title || alert.articleTitle;
-  const created = await fdCreateArticle(String(folderId).trim(), title, md.markdownToHtml(alert.patch.markdown), statusCode);
+  const created = await fdCreateArticle(folderId, title, md.markdownToHtml(alert.patch.markdown), statusCode);
   const articleId = String(created.id);
 
   await store.saveArticle(articleId, {
@@ -1027,6 +1132,7 @@ async function approveGap(alert, statusCode, folderId, actor) {
     title,
     category: '',
     subcategory: '',
+    folderId,
     markdown: alert.patch.markdown,
     documentedPath: md.documentedPathOf(alert.patch.markdown),
     baselineReopenRate: 0.0
@@ -1279,7 +1385,7 @@ async function matchResolvedTicketRequest(args) {
     responder_id: args.agent_id || args.responder_id || 'unknown',
     replyText: requestReplyText(ticket)
   };
-  const outcome = await afterMatch(match, ticket, evidence, scoringCfg(iparams), new Map())
+  const outcome = await afterMatch(match, ticket, evidence, scoringCfg(iparams), new Map(), iparams)
     .catch((err) => ({ driftError: errorText(err) }));
 
   return Object.assign(matchSummary(match), {
@@ -1358,7 +1464,8 @@ exports = {
     const mode = args.publishMode || iparams.publish_mode || 'production';
 
     return respond(Promise.resolve(requireAdmin(args))
-      .then((actor) => approveAlert(args.alertId, mode, actor, iparams.gap_folder_id)));
+      .then((actor) => approveAlert(args.alertId, mode, actor, iparams.gap_folder_id))
+      .then(async (result) => Object.assign(result, { deptCall: await callDeptHead(args.alertId, result, iparams) })));
   },
 
   rejectAlert: function (args) {

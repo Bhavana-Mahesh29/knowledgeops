@@ -10,6 +10,7 @@
     "fdk-unit-test": "vitest run --coverage"
   },
   "dependencies": {
+    "@vobiz/sdk": "github:vobiz-ai/Vobiz-Node-SDK",
     "axios": "^1.20.0",
     "csv-parser": "^3.2.1"
   },

@@ -50,6 +50,44 @@
     "type": "text",
     "required": false
   },
+  "vobiz_auth_id": {
+    "display_name": "Vobiz Auth ID",
+    "description": "From the Vobiz console. Phone alerts stay off until the four Vobiz/relay fields are filled in.",
+    "type": "text",
+    "required": false
+  },
+  "vobiz_auth_token": {
+    "display_name": "Vobiz Auth Token",
+    "description": "From the Vobiz console. Sent only to api.vobiz.ai.",
+    "type": "text",
+    "secure": true,
+    "required": false
+  },
+  "vobiz_from_number": {
+    "display_name": "Vobiz caller number",
+    "description": "The Vobiz number calls are placed from, in international format.",
+    "type": "text",
+    "default_value": "+918064261580",
+    "required": false
+  },
+  "voice_relay_url": {
+    "display_name": "Voice relay URL",
+    "description": "Public https URL of scripts/voice-relay.js (e.g. your ngrok URL). Vobiz fetches the spoken message from it when a call connects.",
+    "type": "text",
+    "required": false
+  },
+  "admin_phone": {
+    "display_name": "Admin phone number(s)",
+    "description": "Called when a High Knowledge Drift alert is raised. International format; separate several with commas.",
+    "type": "text",
+    "required": false
+  },
+  "dept_heads": {
+    "display_name": "Department heads",
+    "description": "Called when an approved update reaches Freshdesk. One per line: <folder id, category id or category name> = <team> | <phone>. Add 'default = <team> | <phone>' as a fallback. Example: 68000075564 = IT Support | +919876543210",
+    "type": "paragraph",
+    "required": false
+  },
   "embedding_provider": {
     "display_name": "Embedding provider (ticket-to-article matching)",
     "description": "local = built-in deterministic embedder, no key or network needed. voyage = Voyage AI embeddings (needs the Voyage API key below). Changing provider re-embeds the knowledge base on the next match.",

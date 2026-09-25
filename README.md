@@ -235,9 +235,33 @@ to be one. Read it as an enablement gap rather than a documentation bug.
    | Provisional hedging | ON lets the bot answer with an unapproved path on Critical alerts |
    | Publish mode | `demo` publishes immediately, `production` saves a draft |
    | Folder for new articles | Solution folder id that approved knowledge-gap drafts are created in |
+   | Vobiz Auth ID / Auth Token / caller number | Vobiz account used for phone alerts (same values as `.env`) |
+   | Voice relay URL | Public https URL of `scripts/voice-relay.js` |
+   | Admin phone number(s) | Called when a High Knowledge Drift alert is raised |
+   | Department heads | `<folder id, category id or category name> = <team> \| <phone>`, one per line, plus an optional `default = ...` |
 
    The install page must be saved at least once — the request templates read
    the domain and API key from there.
+
+### Phone alerts (Vobiz)
+
+- **High Knowledge Drift** — the admin is phoned with the article, what step
+  changed, the old and new path, and how many agents/tickets confirm it. One
+  call per article + drifted path, however many more tickets arrive.
+- **Approved update reaches Freshdesk** — the head of the department whose
+  folder/category owns the article is phoned with what changed.
+
+Vobiz reads what to say from an `answer_url`, which a serverless app cannot
+serve, so the message travels in that URL to `scripts/voice-relay.js`, a
+dependency-free, credential-free relay:
+
+    node scripts/voice-relay.js      # PORT, default 3000
+    ngrok http 3000                  # paste the https URL into "Voice relay URL"
+
+`node scripts/vobiz-test-call.js <your-number> <relay-url>` places one test
+call with the credentials in `.env`. The FDK app itself cannot read `.env`;
+enter the same values on the settings page. A failed call is logged and shown
+on the board, and never blocks an alert or an approval.
 
 ### Automatic detection from Freshdesk
 

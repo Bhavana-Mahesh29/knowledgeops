@@ -15,7 +15,8 @@
         "fdGetArticle": {},
         "fdCreateArticle": {},
         "fdUpdateArticle": {},
-        "voyageEmbeddings": {}
+        "voyageEmbeddings": {},
+        "vobizMakeCall": {}
       },
       "functions": {
         "listAlerts": {},

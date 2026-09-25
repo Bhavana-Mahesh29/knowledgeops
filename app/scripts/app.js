@@ -277,6 +277,21 @@ function patchPane(patch) {
     : `<pre class="markdown">${markdown || '(no draft)'}</pre>`;
 }
 
+function timeOf(iso) {
+  const when = new Date(iso);
+
+  return Number.isNaN(when.getTime()) ? '' : ` at ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+// Set by the server once it has phoned the admin about a high drift.
+function adminCallLine(alert) {
+  const placed = (alert.adminCalls || []).filter((c) => c.placed);
+
+  return placed.length
+    ? `<p class="call-note">Admin alerted by phone${timeOf(placed[0].at)}</p>`
+    : '';
+}
+
 function driftDetail(alert) {
   return `<div class="detail-head">
       <h3>${esc(alert.articleTitle)}</h3>
@@ -284,6 +299,7 @@ function driftDetail(alert) {
     </div>
     <p class="summary">${findingLine(alert)}</p>
     <p class="evidence">${evidenceLine(alert)}</p>
+    ${adminCallLine(alert)}
     ${pathDiff(alert)}
     <h4>Updated article</h4>
     ${patchPane(alert.patch)}
@@ -377,14 +393,26 @@ async function loadBoard() {
 
 // ---- Actions ------------------------------------------------------------
 
+function deptCallText(call) {
+  if (!call) {
+    return '';
+  }
+
+  return call.placed
+    ? ` The ${call.team} lead is being called about the update.`
+    : ` No department call: ${call.reason}.`;
+}
+
 async function approveSelected() {
   const result = await invoke('approveAlert', withActor({ alertId: state.selectedId }));
 
   const what = result.created ? `New article ${result.articleId} created` : `Article ${result.articleId}`;
 
-  showStatus(result.published
+  const saved = result.published
     ? `${what} and published to Freshdesk.`
-    : `${what} and saved to Freshdesk as a draft for manual release.`, false);
+    : `${what} and saved to Freshdesk as a draft for manual release.`;
+
+  showStatus(`${saved}${deptCallText(result.deptCall)}`, false);
 
   el('detail').innerHTML = '<p class="muted empty">Approved.</p>';
   state.selectedId = null;

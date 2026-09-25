@@ -80,6 +80,7 @@ function createRequestApi({ gate, overrides } = {}) {
       : Promise.reject({ status: 404, response: '{"code":"not_found"}' })),
     fdUpdateArticle: () => Promise.resolve({ status: 200, response: '{}' }),
     fdCreateArticle: () => Promise.resolve({ status: 201, response: JSON.stringify({ id: 777 }) }),
+    vobizMakeCall: () => Promise.resolve({ status: 200, response: JSON.stringify({ api_id: 'a', request_uuid: 'call-1', message: 'Call fired' }) }),
     voyageEmbeddings: (opts) => {
       const body = JSON.parse(opts.body);
 
@@ -261,6 +262,123 @@ describe('ticket-to-article matching in the server', () => {
     const gaps = await renderData.call(() => env.methods.listKnowledgeGaps({}));
 
     expect(gaps.map((g) => g.ticketId)).toEqual(['R-210']);
+  });
+
+  describe('phone alerts through Vobiz', () => {
+    const call = (env, name, args) => renderData.call(() => env.methods[name](Object.assign({ iparams: IPARAMS }, args)));
+    const VOICE = Object.assign({
+      vobiz_auth_id: 'MA_TEST',
+      vobiz_auth_token: 'secret',
+      vobiz_from_number: '+91 80642 61580',
+      voice_relay_url: 'https://relay.example.com/',
+      admin_phone: '+919800000001',
+      dept_heads: 'default = Support Ops | +919800000009\nAccount = IT Support | +91 98000 00002'
+    }, IPARAMS);
+    const linked = (id) => ({
+      ticket_id: id,
+      subject: 'Token expired',
+      resolution_note: RESET_REPLY,
+      associated_solution_article_id: TOKEN_ARTICLE_ID,
+      agent_id: 320,
+      iparams: VOICE
+    });
+    const vobizCalls = (requests) => requests.calls.filter((c) => c.template === 'vobizMakeCall');
+    const spokenText = (call) => new URL(JSON.parse(call.options.body).answer_url).searchParams.get('text');
+
+    test('a high knowledge drift alert phones the admin with what changed', async () => {
+      const { env, requests } = await serverWithKb();
+      const result = await match(env, linked('T-2001'));
+      const calls = vobizCalls(requests);
+
+      expect(result.drift.alerts[0].band).toBe('critical');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].options.context).toEqual({ auth_id: 'MA_TEST' });
+
+      const body = JSON.parse(calls[0].options.body);
+
+      expect(body).toMatchObject({ from: '918064261580', to: '+919800000001', answer_method: 'GET' });
+      expect(body.answer_url.startsWith('https://relay.example.com/voice/answer?text=')).toBe(true);
+
+      const said = spokenText(calls[0]);
+
+      expect(said).toContain('high knowledge drift alert was raised for the article: Reset your security token');
+      expect(said).toContain('The article says: Profile Settings, then API and Security Details, then Reset Security Token');
+      expect(said).toContain('Agents now use: Profile, then Authentication, then Security, then Reset Security Token');
+      expect(said).toContain('confirmed by 1 agent across 1 ticket');
+      expect(said).toContain('review the proposed update');
+      expect(said).not.toContain('agent@example.com');
+
+      const alert = await call(env, 'getAlertDetail', { alertId: result.drift.alerts[0].alertId });
+
+      expect(alert.adminCalls[0]).toMatchObject({ placed: true, to: '+919800000001', requestUuid: 'call-1' });
+    });
+
+    test('more tickets on the same drift do not ring the admin again', async () => {
+      const { env, requests } = await serverWithKb();
+
+      await match(env, linked('T-2002'));
+      const second = await match(env, linked('T-2003'));
+
+      expect(vobizCalls(requests)).toHaveLength(1);
+
+      const alert = await call(env, 'getAlertDetail', { alertId: second.drift.alerts[0].alertId });
+
+      expect(alert.adminCalls[0].placed).toBe(true);
+    });
+
+    test('no calls at all until Vobiz is configured', async () => {
+      const { env, requests } = await serverWithKb();
+
+      await match(env, Object.assign(linked('T-2004'), { iparams: IPARAMS }));
+      expect(vobizCalls(requests)).toHaveLength(0);
+    });
+
+    test('approving an update phones the head of the department that owns the article', async () => {
+      const { env, requests } = await serverWithKb();
+      const result = await match(env, linked('T-2005'));
+      const approved = await call(env, 'approveAlert', { alertId: result.drift.alerts[0].alertId, iparams: VOICE });
+      const calls = vobizCalls(requests);
+
+      expect(approved).toMatchObject({ published: true, deptCall: { placed: true, team: 'IT Support', to: '+919800000002' } });
+      expect(calls).toHaveLength(2);
+      expect(JSON.parse(calls[1].options.body).to).toBe('+919800000002');
+
+      const said = spokenText(calls[1]);
+
+      expect(said).toContain('update for the IT Support team');
+      expect(said).toContain('The solution article Reset your security token was updated and is now published');
+      expect(said).toContain('The steps are now: Profile, then Authentication, then Security, then Reset Security Token');
+    });
+
+    test('the Freshdesk folder id picks the department when it is listed', async () => {
+      const { env, requests } = await serverWithKb({
+        overrides: {
+          fdGetArticle: () => Promise.resolve({
+            response: JSON.stringify({ id: TOKEN_ARTICLE_ID, title: TOKEN_KB_ARTICLE.title, description: TOKEN_ARTICLE_HTML, folder_id: 68000075564, category_id: 5 })
+          })
+        }
+      });
+      const iparams = Object.assign({}, VOICE, { dept_heads: '68000075564 = Security Desk | +919800000003' });
+      const result = await match(env, Object.assign(linked('T-2006'), { iparams }));
+      const approved = await call(env, 'approveAlert', { alertId: result.drift.alerts[0].alertId, iparams });
+
+      expect(approved.deptCall).toMatchObject({ placed: true, team: 'Security Desk', to: '+919800000003' });
+      expect(vobizCalls(requests).map((c) => JSON.parse(c.options.body).to)).toEqual(['+919800000001', '+919800000003']);
+    });
+
+    test('a failed or unmatched call never blocks the approval', async () => {
+      const { env } = await serverWithKb({
+        overrides: { vobizMakeCall: () => Promise.reject({ status: 401, response: '{"error":"bad token"}' }) }
+      });
+      const iparams = Object.assign({}, VOICE, { dept_heads: 'Billing = Finance | +919800000004' });
+      const result = await match(env, Object.assign(linked('T-2007'), { iparams }));
+      const approved = await call(env, 'approveAlert', { alertId: result.drift.alerts[0].alertId, iparams });
+
+      expect(result.drift.adminCalls[0].calls[0]).toMatchObject({ placed: false });
+      expect(result.drift.adminCalls[0].calls[0].reason).toContain('HTTP 401');
+      expect(approved).toMatchObject({ published: true, deptCall: { placed: false } });
+      expect(approved.deptCall.reason).toContain('no department head matches');
+    });
   });
 
   describe('knowledge-gap auto-drafting', () => {
