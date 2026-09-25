@@ -1,0 +1,72 @@
+{
+  "checkTicketFreshness": {
+    "display_name": "Check knowledge freshness for a resolved ticket",
+    "description": "Call when a ticket is resolved. Finds the solution article behind the resolution and reports whether it is fresh, drifting, or missing (knowledge gap).",
+    "parameters": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "ticket_id": {
+          "type": "string",
+          "description": "ID of the resolved Freshdesk ticket, e.g. 1042"
+        }
+      },
+      "required": ["ticket_id"]
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ticket_id": { "type": "string", "description": "The ticket that was checked" },
+        "freshness": {
+          "type": "string",
+          "description": "fresh, emerging_drift, high_drift, knowledge_gap or not_checked"
+        },
+        "is_stale": { "type": "boolean", "description": "True when the article no longer matches how agents resolve this" },
+        "summary": { "type": "string", "description": "One-paragraph explanation for the agent or admin" },
+        "article_id": { "type": "string", "description": "Matched solution article, if any" },
+        "article_title": { "type": "string", "description": "Title of the matched article" },
+        "published_path": { "type": "string", "description": "Navigation path the article documents" },
+        "agent_path": { "type": "string", "description": "Path the resolving agent actually used" },
+        "followed_article": { "type": "boolean", "description": "True when this ticket followed the documented path" },
+        "changed_step": { "type": "string", "description": "The step that drifted, e.g. Billing -> Payments" },
+        "drift_confidence": { "type": "number", "description": "0-1 confidence that the article is outdated" },
+        "evidence": { "type": "string", "description": "How many agents and tickets confirm the drift" },
+        "recommended_action": { "type": "string", "description": "What to do next" },
+        "bot_message": { "type": "string", "description": "Safe customer-facing wording for this procedure" },
+        "alert_id": { "type": "string", "description": "KnowledgeOps alert awaiting review, if any" },
+        "admin_notified": { "type": "boolean", "description": "True when the admin was phoned about this drift" }
+      }
+    }
+  },
+  "getArticleFreshness": {
+    "display_name": "Get solution article freshness",
+    "description": "Check whether a solution article is still accurate or has open knowledge-drift alerts. Read-only and fast.",
+    "parameters": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "properties": {
+        "article_id": {
+          "type": "string",
+          "description": "ID of the Freshdesk solution article"
+        }
+      },
+      "required": ["article_id"]
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "article_id": { "type": "string", "description": "The article that was checked" },
+        "freshness": { "type": "string", "description": "fresh, emerging_drift or high_drift" },
+        "is_stale": { "type": "boolean", "description": "True when the article is outdated" },
+        "summary": { "type": "string", "description": "Short explanation" },
+        "drift_confidence": { "type": "number", "description": "0-1 confidence that the article is outdated" },
+        "recommended_action": { "type": "string", "description": "What to do next" },
+        "bot_message": { "type": "string", "description": "Safe customer-facing wording for this procedure" }
+      }
+    }
+  }
+}

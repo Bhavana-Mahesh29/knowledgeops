@@ -18,44 +18,44 @@ const path = (steps, learned = NONE) => {
 
 describe('toCanonicalPath', () => {
   test('the full documented walk is ok', () => {
-    expect(path(['Profile', 'Authentication', 'Security', 'Reset Security Token'])).toMatchObject({
+    expect(path(['Settings', 'Security', 'Authentication'])).toMatchObject({
       status: 'ok',
-      labels: ['Profile', 'Authentication', 'Security', 'Reset Security Token']
+      labels: ['Settings', 'Security', 'Authentication']
     });
   });
 
   test('menus above the first named step are filled in', () => {
-    expect(path(['Security', 'Reset Security Token'])).toMatchObject({
+    expect(path(['Security', 'Authentication'])).toMatchObject({
       status: 'ok',
-      labels: ['Profile', 'Authentication', 'Security', 'Reset Security Token']
+      labels: ['Settings', 'Security', 'Authentication']
     });
   });
 
-  // Ticket 12: "1.Settings 2.Profile 3.Security 4.Enter password 5.Reset token".
+  // "1.Settings 2.My account 3.Authentication 4.Enter password".
   test('skipping a menu between named steps is not the documented path', () => {
-    const canon = path(['settings', 'profile', 'security', 'enter password', 'reset security token']);
+    const canon = path(['settings', 'my account', 'authentication', 'enter password']);
 
     expect(canon).toMatchObject({
       status: 'inconsistent',
-      labels: ['Profile', 'Security', 'Reset Security Token'],
-      unknown_labels: ['settings', 'enter password']
+      labels: ['Settings', 'Authentication'],
+      unknown_labels: ['my account', 'enter password']
     });
-    expect(missingEdges(canon.mapped_nodes, {})).toEqual([{ from: 'node_profile', to: 'node_security' }]);
+    expect(missingEdges(canon.mapped_nodes, {})).toEqual([{ from: 'node_settings', to: 'node_auth' }]);
   });
 
   test('the right steps in the wrong order are not the documented path', () => {
-    expect(path(['Profile', 'Security', 'Authentication', 'Reset Security Token'])).toMatchObject({
+    expect(path(['Settings', 'Authentication', 'Security'])).toMatchObject({
       status: 'inconsistent',
-      labels: ['Profile', 'Security', 'Authentication', 'Reset Security Token']
+      labels: ['Settings', 'Authentication', 'Security']
     });
   });
 
   test('a learned shortcut edge makes the skip a known route', () => {
-    const learned = { aliases: {}, edges: { node_security: ['node_profile'] } };
+    const learned = { aliases: {}, edges: { node_auth: ['node_settings'] } };
 
-    expect(path(['Profile', 'Security', 'Reset Security Token'], learned)).toMatchObject({
+    expect(path(['Settings', 'Authentication'], learned)).toMatchObject({
       status: 'ok',
-      labels: ['Profile', 'Security', 'Reset Security Token']
+      labels: ['Settings', 'Authentication']
     });
   });
 });

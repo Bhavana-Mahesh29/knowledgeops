@@ -127,16 +127,56 @@ function splitTitleLine(head) {
   return { title: '', rest: head.trim() };
 }
 
+// Headings authors use for the procedure itself: "Step-by-Step Instructions",
+// "Steps to reset", "Instructions", "Procedure".
+const STEPS_LIKE = /^(?:step[- ]by[- ]step\b.*|steps?\b.*|instructions|procedure)$/i;
+
+// The heading an article really uses for its procedure, when that is not
+// already "Steps". Kept so a published patch can put the author's heading
+// back instead of renaming it.
+function stepsHeadingOf(md) {
+  const sections = splitSections(String(md || '').trim());
+
+  if (sections[STEPS] !== undefined) {
+    return null;
+  }
+
+  return Object.keys(sections).find((h) => h !== '_head' && STEPS_LIKE.test(h)) || null;
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&');
+}
+
+function renameHeading(md, from, to) {
+  const heading = new RegExp('(^|\\n)## ' + escapeRegExp(from) + '[ \\t]*(?=\\n|$)');
+
+  return md.replace(heading, `$1## ${to}`);
+}
+
+// Publishing side of stepsHeadingOf: the stored copy calls the section
+// "Steps"; Freshdesk gets the author's heading back.
+function restoreStepsHeading(md, heading) {
+  return heading ? renameHeading(String(md || ''), STEPS, heading) : md;
+}
+
 // The strict validator compares section headings between the original and the
 // patch, and only lets the Steps section change. A Freshdesk article authored
 // without a "Steps" heading would therefore be unpatchable, so the stored
-// baseline always gets one.
+// baseline always gets one - the author's own procedure heading when there is
+// one, a new empty section otherwise.
 function normaliseArticleMarkdown(md, articleTitle) {
   const body = String(md || '').trim();
   const sections = splitSections(body);
 
   if (sections[STEPS] !== undefined) {
     return body;
+  }
+
+  const authored = stepsHeadingOf(body);
+
+  if (authored !== null) {
+    return renameHeading(body, authored, STEPS);
   }
 
   if (Object.keys(sections).length > 1) {
@@ -159,10 +199,12 @@ function documentedPathOf(md) {
   const bold = /\*\*(.+?)\*\*/g;
   let m;
 
+  // A menu named again later ("the change shows on the **Profile** page") is
+  // a mention, not a second visit, so only its first appearance counts.
   while ((m = bold.exec(stepsBody)) !== null) {
     const node = tax.lookup(m[1]);
 
-    if (node !== null) {
+    if (node !== null && !nodes.includes(node)) {
       nodes.push(node);
     }
   }
@@ -174,7 +216,9 @@ const api = {
   htmlToMarkdown,
   markdownToHtml,
   normaliseArticleMarkdown,
-  documentedPathOf
+  documentedPathOf,
+  stepsHeadingOf,
+  restoreStepsHeading
 };
 
 // FDK's serverless sandbox exposes `exports` but no `module`; plain Node needs

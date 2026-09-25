@@ -1,163 +1,114 @@
+// reslove_tickets.js
+// Posts each demo ticket's agent resolution (see demo_scenarios.js) as a
+// public reply from the assigned agent. The ticket status is NOT changed -
+// every ticket stays Open until someone resolves it in Freshdesk, which is
+// the moment KnowledgeOps analyses it.
+//
+//   node reslove_tickets.js
+//
+// Reads the ticket ids create_articles_tickets.js saved to
+// data/demo_tickets.json, and records which ones have been answered so a
+// second run does not post the same reply twice.
+const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
+const { DOMAIN, SCENARIOS } = require('./demo_scenarios');
 
 // ==================== CONFIGURATION ====================
-const FRESHDESK_DOMAIN = 'knowledgeopshack.freshdesk.com';
+const FRESHDESK_DOMAIN = DOMAIN;
 const API_KEY = 'fwapi_1RY2zqkqfM3UjPf447qNK5_1022750354893064294_7b31579f'; // Replace with your Freshdesk API key
 // =======================================================
+
+const TICKETS_FILE = path.join(__dirname, 'data', 'demo_tickets.json');
 
 const authHeader = {
   headers: {
     'Content-Type': 'application/json',
-    'Authorization': `Basic ${Buffer.from(`${API_KEY}:X`).toString('base64')}`
+    'Authorization': `Basic ${Buffer.from(`${process.env.FRESHDESK_API_KEY || API_KEY}:X`).toString('base64')}`
   }
 };
 
-// Solutions mapped by topic keywords
-const resolutionScenarios = [
-  {
-    // =========================================================================
-    // CASE 1: HIGH DRIFT (Triggers CRITICAL Alert + Proposed Patch)
-    // Target Article: "How to Enable Two-Factor Authentication"
-    // Documented in KB: Settings -> Security -> Authentication
-    // Agent Solution: Diverges deeper into Security -> Authentication -> Reset Token
-    // =========================================================================
-    keyword: 'Two-Factor',
-    type: 'HIGH DRIFT (Critical)',
-    agentReply: `
-      <p>Hello,</p>
-      <p>The 2FA procedure has recently been updated in our latest portal release. Please follow the new steps below:</p>
-      <ol>
-        <li>Navigate to <strong>Settings</strong> from the main menu.</li>
-        <li>Click on <strong>Security</strong>.</li>
-        <li>Select <strong>Authentication</strong>.</li>
-        <li>Click on <strong>Reset Token</strong>.</li>
-        <li>Click <strong>Confirm and generate new token</strong> to pair your authenticator app.</li>
-      </ol>
-      <p>Your new 2FA profile is now active.</p>
-    `
-  },
-  {
-    // =========================================================================
-    // CASE 2: HIGH DRIFT #2 (Triggers CRITICAL Alert)
-    // Target Article: "How to Reset Your Account Password"
-    // Documented in KB: Login -> Forgot Password
-    // Agent Solution: Completely routes through Settings -> Security -> Authentication
-    // =========================================================================
-    keyword: 'password',
-    type: 'HIGH DRIFT (Critical)',
-    agentReply: `
-      <p>Hi there,</p>
-      <p>If you are logged into your system and need to update your expired credentials, use the internal settings path:</p>
-      <ol>
-        <li>Open your browser and navigate to <strong>Settings</strong>.</li>
-        <li>Click on <strong>Security</strong>.</li>
-        <li>Choose <strong>Authentication</strong>.</li>
-        <li>Select <strong>Reset Token</strong> to set your new account password.</li>
-      </ol>
-      <p>This avoids having to log out to use the public reset link.</p>
-    `
-  },
-  {
-    // =========================================================================
-    // CASE 3: LOW / SLIGHT DRIFT (Triggers WARNING Alert / Emerging Pattern)
-    // Target Article: "How to Update Your Profile Information"
-    // Documented in KB: Settings -> Profile -> Edit
-    // Agent Solution: Takes a shortcut directly to Profile -> Edit (skips Settings)
-    // =========================================================================
-    keyword: 'Profile',
-    type: 'LOW / SLIGHT DRIFT (Warning)',
-    agentReply: `
-      <p>Hello,</p>
-      <p>You can use the new navigation shortcut to change your profile information quickly:</p>
-      <ol>
-        <li>Click directly on your <strong>Profile</strong> icon in the header.</li>
-        <li>Click <strong>Edit</strong> next to your contact and department fields.</li>
-        <li>Enter your new details and click <strong>Save</strong>.</li>
-      </ol>
-      <p>The changes will reflect immediately across your account.</p>
-    `
-  },
-  {
-    // =========================================================================
-    // CASE 4: NO DRIFT / BASELINE (Matches KB Article Exactly)
-    // Target Article: "How to Set Up VPN Access on Windows"
-    // Documented in KB: Download VPN Client -> Install -> Configure Server -> Authenticate
-    // Agent Solution: Follows the exact documented path without deviations
-    // =========================================================================
-    keyword: 'VPN',
-    type: 'NO DRIFT (Control / Baseline)',
-    agentReply: `
-      <p>Hello,</p>
-      <p>Here are the standard instructions to configure your VPN connection:</p>
-      <ol>
-        <li>Download the <strong>SecureConnect Client</strong> from our internal software portal.</li>
-        <li>Run the installer using default settings.</li>
-        <li>Open the client and enter server address <code>vpn.company.internal</code>.</li>
-        <li>Enter your network credentials and click <strong>Connect</strong>.</li>
-      </ol>
-      <p>The client will show a status of CONNECTED once active.</p>
-    `
-  }
-];
-
-async function sleep(ms) {
+function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function resolveOpenTickets() {
+const OPEN = 2;
+
+// A Freddy AI Agent deployed on the helpdesk claims new tickets as they
+// arrive ("Assigned to AI Agent"). Freshdesk refuses replies on those, and
+// KnowledgeOps counts distinct agents by assignee, so each demo ticket is
+// handed back to its human agent - still Open, never resolved.
+async function reclaim(ticketId, scenario) {
+  const url = `https://${FRESHDESK_DOMAIN}/api/v2/tickets/${ticketId}`;
+  const { data } = await axios.get(url, authHeader);
+
+  if (data.status === OPEN && data.responder_id === scenario.responder) {
+    return false;
+  }
+
+  await axios.put(url, { status: OPEN, responder_id: scenario.responder }, authHeader);
+  return true;
+}
+
+function cannotActAs(err) {
+  const status = err.response?.status;
+
+  return status === 400 || (status === 403 && err.response?.data?.code === 'invalid_user');
+}
+
+// Posts as the assigned agent when the API key is allowed to, otherwise as
+// the key's owner. KnowledgeOps counts agents by the ticket's assignee, so
+// either way the evidence is attributed correctly.
+async function postReply(ticketId, scenario) {
+  const url = `https://${FRESHDESK_DOMAIN}/api/v2/tickets/${ticketId}/reply`;
+
   try {
-    console.log(`Fetching open tickets from https://${FRESHDESK_DOMAIN}...`);
-    const res = await axios.get(
-      `https://${FRESHDESK_DOMAIN}/api/v2/tickets?order_by=created_at&order_type=desc`,
-      authHeader
-    );
-
-    const openTickets = res.data.filter((t) => t.status === 2); // 2 = Open
-
-    if (openTickets.length === 0) {
-      console.log('No open tickets found. Run "node create_article_tickets.js" first to create them.');
-      return;
-    }
-
-    console.log(`Found ${openTickets.length} open tickets. Matching and resolving...\n`);
-
-    for (const ticket of openTickets) {
-      // Find matching scenario based on keyword in subject
-      const scenario = resolutionScenarios.find((s) =>
-        ticket.subject.toLowerCase().includes(s.keyword.toLowerCase())
-      );
-
-      if (!scenario) {
-        continue;
-      }
-
-      console.log(`Processing Ticket #${ticket.id}: "${ticket.subject}"`);
-      console.log(`   Applying Scenario: [${scenario.type}]`);
-
-      // 1. Post the agent resolution reply
-      await axios.post(
-        `https://${FRESHDESK_DOMAIN}/api/v2/tickets/${ticket.id}/reply`,
-        { body: scenario.agentReply },
-        authHeader
-      );
-      console.log(`   -> Posted agent resolution reply.`);
-
-      // 2. Set status to Resolved (4), which fires the Automation Rule webhook
-      await axios.put(
-        `https://${FRESHDESK_DOMAIN}/api/v2/tickets/${ticket.id}`,
-        { status: 4 },
-        authHeader
-      );
-      console.log(`   -> Set status to Resolved (Webhook triggered!).\n`);
-
-      // 3-second delay to give FDK and LLM time to process each ticket cleanly
-      await sleep(3000);
-    }
-
-    console.log('All targeted tickets have been resolved.');
+    await axios.post(url, { body: scenario.resolution, user_id: scenario.responder }, authHeader);
+    return 'as the assigned agent';
   } catch (err) {
-    console.error('Error resolving tickets:', err.response?.status, err.response?.data || err.message);
+    if (!cannotActAs(err)) {
+      throw err;
+    }
+    await axios.post(url, { body: scenario.resolution }, authHeader);
+    return 'as the API key owner';
   }
 }
 
-resolveOpenTickets();
+async function postResolutions() {
+  if (!fs.existsSync(TICKETS_FILE)) {
+    console.log('data/demo_tickets.json not found. Run "node create_articles_tickets.js" first.');
+    return;
+  }
+
+  const tickets = JSON.parse(fs.readFileSync(TICKETS_FILE, 'utf8'));
+
+  for (const ticket of tickets) {
+    const scenario = SCENARIOS.find((s) => s.key === ticket.key);
+
+    if (!scenario || ticket.repliedAt) {
+      continue;
+    }
+
+    try {
+      const reclaimed = await reclaim(ticket.ticketId, scenario);
+      const who = await postReply(ticket.ticketId, scenario);
+
+      ticket.repliedAt = new Date().toISOString();
+      console.log(`Ticket #${ticket.ticketId}: ${reclaimed ? 'taken back from the AI agent, ' : ''}resolution posted ${who} - status left Open (${scenario.group})`);
+    } catch (err) {
+      console.error(`Ticket #${ticket.ticketId}: reply failed:`, err.response?.status, JSON.stringify(err.response?.data || err.message));
+    }
+
+    fs.writeFileSync(TICKETS_FILE, `${JSON.stringify(tickets, null, 2)}\n`);
+    await sleep(1000);
+  }
+
+  console.log('\nDone. All tickets are still Open. Resolve them in Freshdesk in this order to see each alert form cleanly:');
+  for (const group of ['Emerging drift - follows the article', 'High drift - new route', 'Emerging drift - new route', 'Knowledge gap']) {
+    const ids = tickets.filter((t) => t.group === group).map((t) => `#${t.ticketId}`);
+
+    console.log(`  ${group.padEnd(38)} ${ids.join(', ')}`);
+  }
+}
+
+postResolutions();

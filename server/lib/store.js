@@ -112,6 +112,10 @@ async function saveKnowledgeGap(ticketId, gap) {
   await dbAppendIndex('knowledge_gaps', ticketId);
 }
 
+function getKnowledgeGap(ticketId) {
+  return dbGet('knowledge_gaps', ticketId);
+}
+
 function listKnowledgeGaps() {
   return dbList('knowledge_gaps');
 }
@@ -336,6 +340,7 @@ const api = {
   getEmbedding,
   saveEmbedding,
   saveKnowledgeGap,
+  getKnowledgeGap,
   listKnowledgeGaps,
   recordMatchMetrics,
   getMatchMetrics,

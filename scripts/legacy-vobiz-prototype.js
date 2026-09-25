@@ -3,6 +3,8 @@
 // a second `exports =` replaced every handler and express/dotenv/axios cannot be
 // required. The call flow now lives in server/lib/voice.js and
 // scripts/voice-relay.js. Nothing loads this file; kept for reference.
+// runProceduralCheck is superseded by the checkTicketFreshness AI action
+// (actions.json), which receives flat args rather than input_variables.
 
 exports = {
   // Your serverless custom action handler

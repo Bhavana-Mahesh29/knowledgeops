@@ -19,7 +19,7 @@ const TOKEN_ARTICLE_ID = '5001';
 const TOKEN_ARTICLE_HTML = '<h2>Reset your security token</h2>'
   + '<p>Use this guide if your security token expired.</p>'
   + '<h3>Steps</h3>'
-  + '<ol><li>Go to <b>Profile Settings</b> &rarr; <b>API &amp; Security Details</b> &rarr; <b>Reset Security Token</b>.</li>'
+  + '<ol><li>Go to <b>Settings</b> &rarr; <b>Security</b> &rarr; <b>Authentication</b>, then choose <i>Reset security token</i>.</li>'
   + '<li>Choose <i>Confirm reset</i>.</li></ol>'
   + '<h3>Troubleshooting</h3><p>Contact support if missing.</p>';
 
@@ -31,9 +31,9 @@ const TOKEN_KB_ARTICLE = {
   description: TOKEN_ARTICLE_HTML
 };
 
-const RESET_REPLY = 'Go to your profile, click Authentication, then Security, then reset security token. '
+const RESET_REPLY = 'Go to Settings, click Security, then Two-Step Verification, then reset security token. '
   + 'Write to me at agent@example.com if it fails.';
-const NEW_PATH = ['Profile', 'Authentication', 'Security', 'Reset Security Token'];
+const NEW_PATH = ['Settings', 'Security', 'Two-Step Verification'];
 
 function gateCall(body) {
   return Boolean(body.tools && body.tools[0].name === 'record_relevance_decision');
@@ -264,6 +264,89 @@ describe('ticket-to-article matching in the server', () => {
     expect(gaps.map((g) => g.ticketId)).toEqual(['R-210']);
   });
 
+  describe('Freddy AI actions', () => {
+    const action = (env, name, args) => renderData.call(() => env.methods[name](Object.assign({ iparams: IPARAMS }, args)));
+    const ARTICLE_LINK = `https://x.freshdesk.com/support/solutions/articles/${TOKEN_ARTICLE_ID}`;
+    const linkedConversation = {
+      fdGetConversations: () => Promise.resolve({
+        response: JSON.stringify([{ incoming: false, private: false, body: `<p>${RESET_REPLY} ${ARTICLE_LINK}</p>`, body_text: RESET_REPLY }])
+      })
+    };
+
+    test('a resolved ticket nobody analysed yet is run through the pipeline and reported as high drift', async () => {
+      const { env } = await serverWithKb({ overrides: linkedConversation });
+      const result = await action(env, 'checkTicketFreshness', { ticket_id: '#1042' });
+
+      expect(result).toMatchObject({
+        ticket_id: '1042',
+        freshness: 'high_drift',
+        is_stale: true,
+        article_id: TOKEN_ARTICLE_ID,
+        article_title: 'Reset your security token',
+        published_path: 'Settings → Security → Authentication',
+        agent_path: 'Settings → Security → Two-Step Verification',
+        followed_article: false,
+        changed_step: 'Authentication → Two-Step Verification',
+        evidence: 'Confirmed by 1 agent(s) across 1 ticket(s) (100% convergence)',
+        admin_notified: false
+      });
+      expect(result.alert_id).toMatch(new RegExp(`^${TOKEN_ARTICLE_ID}-`));
+      expect(result.summary).toContain('High knowledge drift on article "Reset your security token"');
+      expect(result.recommended_action).toContain('KnowledgeOps board');
+      expect(storedTicket(env, '1042')).toMatchObject({ articleId: TOKEN_ARTICLE_ID });
+    });
+
+    test('a ticket the resolve event already analysed is answered from the store', async () => {
+      const { env, requests } = await serverWithKb({ overrides: linkedConversation });
+
+      await action(env, 'checkTicketFreshness', { ticket_id: '1043' });
+      const fetched = requests.calls.filter((c) => c.template === 'fdGetTicket').length;
+      const again = await action(env, 'checkTicketFreshness', { ticket_id: '1043' });
+
+      expect(requests.calls.filter((c) => c.template === 'fdGetTicket')).toHaveLength(fetched);
+      expect(again.freshness).toBe('high_drift');
+    });
+
+    test('an unresolved ticket is not checked', async () => {
+      const { env } = await serverWithKb({
+        overrides: {
+          fdGetTicket: (opts) => Promise.resolve({ response: JSON.stringify({ id: Number(opts.context.ticket_id), status: 2, responder_id: 320 }) })
+        }
+      });
+      const result = await action(env, 'checkTicketFreshness', { ticket_id: '1044' });
+
+      expect(result).toMatchObject({ freshness: 'not_checked', is_stale: false });
+      expect(result.summary).toContain('not resolved or closed');
+    });
+
+    test('a resolution no article covers comes back as a knowledge gap with its draft', async () => {
+      const { env } = await serverWithKb({ gate: () => ({ decision: 'NO_MATCH', article_id: null, confidence: 0.2, reason: 'x' }) });
+      const result = await action(env, 'checkTicketFreshness', { ticket_id: '1045' });
+
+      expect(result).toMatchObject({ ticket_id: '1045', freshness: 'knowledge_gap', is_stale: true, alert_id: 'gap-1045' });
+      expect(result.summary).toContain('KnowledgeOps drafted a new article');
+    });
+
+    test('article freshness is a read-only lookup', async () => {
+      const { env } = await serverWithKb({ overrides: linkedConversation });
+
+      await action(env, 'checkTicketFreshness', { ticket_id: '1046' });
+
+      const stale = await action(env, 'getArticleFreshness', { article_id: TOKEN_ARTICLE_ID });
+      const fresh = await action(env, 'getArticleFreshness', { article_id: '9003' });
+
+      expect(stale).toMatchObject({ freshness: 'high_drift', is_stale: true, article_id: TOKEN_ARTICLE_ID });
+      expect(fresh).toMatchObject({ freshness: 'fresh', is_stale: false, recommended_action: expect.stringContaining('No action needed') });
+      await expect(action(env, 'getArticleFreshness', { article_id: 'nope' })).rejects.toMatchObject({ status: 404 });
+    });
+
+    test('a missing ticket id is a 400, not a crash', async () => {
+      const { env } = await serverWithKb();
+
+      await expect(action(env, 'checkTicketFreshness', { ticket_id: ' ' })).rejects.toMatchObject({ status: 400 });
+    });
+  });
+
   describe('phone alerts through Vobiz', () => {
     const call = (env, name, args) => renderData.call(() => env.methods[name](Object.assign({ iparams: IPARAMS }, args)));
     const VOICE = Object.assign({
@@ -302,8 +385,9 @@ describe('ticket-to-article matching in the server', () => {
       const said = spokenText(calls[0]);
 
       expect(said).toContain('high knowledge drift alert was raised for the article: Reset your security token');
-      expect(said).toContain('The article says: Profile Settings, then API and Security Details, then Reset Security Token');
-      expect(said).toContain('Agents now use: Profile, then Authentication, then Security, then Reset Security Token');
+      expect(said).toContain('The step Authentication has been replaced by Two-Step Verification.');
+      expect(said).toContain('The article says: Settings, then Security, then Authentication');
+      expect(said).toContain('Agents now use: Settings, then Security, then Two-Step Verification');
       expect(said).toContain('confirmed by 1 agent across 1 ticket');
       expect(said).toContain('review the proposed update');
       expect(said).not.toContain('agent@example.com');
@@ -347,7 +431,7 @@ describe('ticket-to-article matching in the server', () => {
 
       expect(said).toContain('update for the IT Support team');
       expect(said).toContain('The solution article Reset your security token was updated and is now published');
-      expect(said).toContain('The steps are now: Profile, then Authentication, then Security, then Reset Security Token');
+      expect(said).toContain('The steps are now: Settings, then Security, then Two-Step Verification');
     });
 
     test('the Freshdesk folder id picks the department when it is listed', async () => {
@@ -639,8 +723,8 @@ describe('ticket-to-article matching in the server', () => {
         value: JSON.stringify({
           articleId: GHOST,
           title: 'How to Reset Your Account Security Token',
-          markdown: '## Steps\n\n1. Navigate to your **Profile**.\n\n2. Click **Authentication**.\n\n3. Click **Security**.\n\n4. Click **Reset Security Token**.',
-          documentedPath: ['node_profile', 'node_auth', 'node_security', 'node_reset']
+          markdown: '## Steps\n\n1. Navigate to **Settings**.\n\n2. Click **Security**.\n\n3. Click **Two-Step Verification**, then reset the security token.',
+          documentedPath: ['node_settings', 'node_security', 'node_two_step']
         })
       });
       env.db.rows.set('index:articles', { value: JSON.stringify([...index(), GHOST]) });
@@ -730,15 +814,15 @@ describe('automatic ingestion via webhook, and the terminal verdict', () => {
     const report = lines.find((l) => l.startsWith('[knowledgeops] drift: ticket 9'));
 
     expect(report).toContain(`article ${TOKEN_ARTICLE_ID} "Reset your security token"`);
-    expect(report).toContain('documented path : Profile Settings → API & Security Details → Reset Security Token');
-    expect(report).toContain('agent\'s path    : Profile → Authentication → Security → Reset Security Token');
+    expect(report).toContain('documented path : Settings → Security → Authentication');
+    expect(report).toContain('agent\'s path    : Settings → Security → Two-Step Verification');
     expect(report).toContain('verdict         : PROCEDURAL DRIFT - critical alert raised (confidence 1.00), validated patch drafted');
   });
 
   test('the terminal says NO DRIFT when the agent followed the article', async () => {
-    const followed = 'Go to Profile, then Authentication, then Security, then Reset Security Token.';
-    const html = '<h2>Reset</h2><h3>Steps</h3><ol><li>Go to <b>Profile</b> &rarr; <b>Authentication</b> &rarr; '
-      + '<b>Security</b> &rarr; <b>Reset Security Token</b>.</li></ol>';
+    const followed = 'Go to Settings, then Security, then Two-Step Verification.';
+    const html = '<h2>Reset</h2><h3>Steps</h3><ol><li>Go to <b>Settings</b> &rarr; <b>Security</b> &rarr; '
+      + '<b>Two-Step Verification</b>.</li></ol>';
     const requests = createRequestApi({
       overrides: {
         fdGetArticle: () => Promise.resolve({ response: JSON.stringify({ id: TOKEN_ARTICLE_ID, title: 'Reset', description: html }) }),

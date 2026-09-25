@@ -10,7 +10,9 @@ const { toCanonicalPath, missingEdges } = require('./server/lib/canonical');
 const { scoreCluster } = require('./server/lib/scoring');
 const { validatePatch } = require('./server/lib/validator');
 const { templatePatch } = require('./server/lib/architect');
-const { htmlToMarkdown, normaliseArticleMarkdown, documentedPathOf } = require('./server/lib/markdown');
+const {
+  htmlToMarkdown, normaliseArticleMarkdown, documentedPathOf, stepsHeadingOf, restoreStepsHeading
+} = require('./server/lib/markdown');
 const { redact } = require('./server/lib/redact');
 
 let failures = 0;
@@ -28,47 +30,49 @@ function assertEq(actual, expected, label) {
 }
 
 console.log('--- canonical.js ---');
-// The route agents walk now.
+// The route agents walk now for two-step verification.
 assertEq(
-  toCanonicalPath(['profile', 'authentication', 'security', 'reset security token']).canonical_path,
-  ['node_profile', 'node_auth', 'node_security', 'node_reset'],
+  toCanonicalPath(['settings', 'security', 'two-step verification']).canonical_path,
+  ['node_settings', 'node_security', 'node_two_step'],
   'full path maps cleanly'
 );
+// Menus above the first named step are filled in (an agent who starts at
+// "Security" is standing somewhere); nothing between named steps is.
 assertEq(
-  toCanonicalPath(['authentication', 'reset security token']).canonical_path,
-  ['node_profile', 'node_auth', 'node_security', 'node_reset'],
-  'skipped level is auto-filled'
+  toCanonicalPath(['security', 'two-step verification']).canonical_path,
+  ['node_settings', 'node_security', 'node_two_step'],
+  'menus above the first named step are filled in'
 );
 assertEq(
-  toCanonicalPath(['suraksha', 'reset security token']).canonical_path.slice(-1),
-  ['node_reset'],
+  toCanonicalPath(['suraksha', 'two-step verification']).canonical_path.slice(-1),
+  ['node_two_step'],
   'regional alias maps'
 );
 assertEq(toCanonicalPath([]).status, 'no_steps', 'no steps is its own status');
 assertEq(toCanonicalPath(['frobnicate', 'wibble']).status, 'has_unknown', 'nothing resolvable -> has_unknown');
 
 // A leftover label no longer discards the ticket; the resolved part still
-// counts. These are the labels the extractor really returned for ticket 4.
+// counts. Real replies name buttons and form fields that are not menus.
 const PARTIAL = toCanonicalPath([
-  'profile', 'authentication', 'security', 'reset security token',
-  'enter password', 'confirm and generate new token'
+  'settings', 'security', 'two-step verification',
+  'scan the qr code', 'enter the 6-digit code'
 ]);
 
 assertEq(
   PARTIAL.canonical_path,
-  ['node_profile', 'node_auth', 'node_security', 'node_reset'],
+  ['node_settings', 'node_security', 'node_two_step'],
   'the real agent reply resolves to the full path'
 );
 assertEq(PARTIAL.status, 'ok', 'partially resolved ticket is still usable evidence');
 assertEq(PARTIAL.partial, true, 'partial flag is set');
 assertEq(
   PARTIAL.unknown_labels,
-  ['enter password', 'confirm and generate new token'],
+  ['scan the qr code', 'enter the 6-digit code'],
   'form actions are reported, not dropped'
 );
 assertEq(
   toCanonicalPath(['click security'], { aliases: { 'click security': 'node_security' } }).canonical_path,
-  ['node_profile', 'node_auth', 'node_security'],
+  ['node_settings', 'node_security'],
   'a learned alias resolves through the overlay'
 );
 
@@ -76,70 +80,69 @@ assertEq(
 // ignored, not fed into the lineage walk - that returned [] and reported a
 // clean ticket as 'inconsistent'.
 const DANGLING = toCanonicalPath(
-  ['profile', 'authentication', 'click reset security token'],
-  { aliases: { 'click reset security token': 'node_gone' } }
+  ['settings', 'security', 'click two-step verification'],
+  { aliases: { 'click two-step verification': 'node_gone' } }
 );
 
 assertEq(DANGLING.status, 'ok', 'an alias pointing at a deleted node is ignored');
 assertEq(
   DANGLING.unknown_labels,
-  ['click reset security token'],
+  ['click two-step verification'],
   'the dangling label falls back to unknown, ready to be relearned'
 );
 
 console.log('\n--- canonical.js: the graph, and routes it has to learn ---');
-// Ticket 5: the superseded route, ending at the button's current name. No
-// single route joins those up until the graph gains the missing edge - an
-// alias cannot fix this, because every label involved already resolved.
-const T5 = ['profile settings', 'api details', 'reset security token'];
-const T5_ALIASES = { aliases: { 'api details': 'node_api_security' } };
+// Agents reaching Two-Step Verification straight from Profile. No single
+// route joins those up until the graph gains the missing edge - an alias
+// cannot fix this, because every label involved already resolved.
+const T5 = ['profile', '2fa page'];
+const T5_ALIASES = { aliases: { '2fa page': 'node_two_step' } };
 const BEFORE = toCanonicalPath(T5, T5_ALIASES);
 
 assertEq(BEFORE.status, 'inconsistent', 'a route the graph cannot join up is inconsistent');
 assertEq(
   missingEdges(BEFORE.mapped_nodes, {}),
-  [{ from: 'node_api_security', to: 'node_reset' }],
+  [{ from: 'node_profile', to: 'node_two_step' }],
   'the gap is reported as a candidate edge'
 );
 
 const T5_LEARNED = {
   aliases: T5_ALIASES.aliases,
-  edges: { node_reset: ['node_api_security'] }
+  edges: { node_two_step: ['node_profile'] }
 };
 const AFTER = toCanonicalPath(T5, T5_LEARNED);
 
 assertEq(AFTER.status, 'ok', 'once the edge is learned the same ticket resolves');
 assertEq(
   AFTER.canonical_path,
-  ['node_profile', 'node_profile_settings', 'node_api_security', 'node_reset'],
-  'and canonicalises onto the superseded route'
+  ['node_settings', 'node_profile', 'node_two_step'],
+  'and canonicalises onto the learned route'
 );
 assertEq(
-  toCanonicalPath(['profile', 'authentication', 'security', 'reset security token'], T5_LEARNED)
-    .canonical_path,
-  ['node_profile', 'node_auth', 'node_security', 'node_reset'],
-  'the current route still wins for tickets that walk it'
+  toCanonicalPath(['settings', 'security', 'two-step verification'], T5_LEARNED).canonical_path,
+  ['node_settings', 'node_security', 'node_two_step'],
+  'the authored route still wins for tickets that walk it'
 );
 assertEq(
-  tax.lineages('node_reset', T5_LEARNED.edges).length,
+  tax.lineages('node_two_step', T5_LEARNED.edges).length,
   2,
   'the destination is reachable two ways'
 );
 assertEq(
-  tax.lineages('node_reset', { node_profile: ['node_reset'] }).length,
+  tax.lineages('node_two_step', { node_settings: ['node_two_step'] }).length,
   1,
   'a cyclic edge shortens the route rather than deleting the node'
 );
 
 console.log('\n--- taxonomy.js: alias promotion targets ---');
-assertEq(tax.bestNodeFor('click reset security token').nodeId, 'node_reset', 'reworded label finds its node');
+assertEq(tax.bestNodeFor('click two-step verification').nodeId, 'node_two_step', 'reworded label finds its node');
 assertEq(tax.bestNodeFor('click security').nodeId, 'node_security', 'filler words alone still resolve');
 assertEq(tax.bestNodeFor('go to profile').nodeId, 'node_profile', 'a one-word node is reachable');
-assertEq(tax.bestNodeFor('api details').nodeId, 'node_api_security', 'an abbreviated label finds its node');
+assertEq(tax.bestNodeFor('step verification').nodeId, 'node_two_step', 'an abbreviated label finds its node');
 assertEq(
-  tax.bestNodeFor('the security details').nodeId,
-  'node_api_security',
-  'a deprecated node is still recognisable - the validator, not the matcher, refuses to publish it'
+  tax.bestNodeFor('the authentication page').nodeId,
+  'node_auth',
+  'a superseded page is still recognisable - the validator, not the matcher, refuses to publish a deprecated one'
 );
 assertEq(tax.bestNodeFor('enter password'), null, 'a label matching nothing is refused');
 assertEq(tax.bestNodeFor('confirm and generate new token'), null, 'one shared token is not enough');
@@ -167,29 +170,29 @@ console.log('\n--- validator.js ---');
 
 // An article documenting the current route, and a patch aiming at the other
 // one - the shape that exercises the deprecation check either way.
-const SEEDED_STALE = `# How to reset your account security token
+const SEEDED_STALE = `# How to enable two-factor authentication
 ## Steps
-1. Go to **Profile** → **Authentication** → **Security** → **Reset Security Token**.
+1. Go to **Settings** → **Security** → **Two-Step Verification**.
 `;
-const RETIRED_TARGET = ['node_profile', 'node_profile_settings', 'node_api_security', 'node_reset'];
+const RETIRED_TARGET = ['node_settings', 'node_security', 'node_auth'];
 
-const ORIGINAL = `# How to reset your account security token
+const ORIGINAL = `# How to enable two-factor authentication
 ## Overview
-Use this guide if your token expired.
+Use this guide to add a second sign-in step.
 ## Steps
-1. Go to **Profile Settings** → **API & Security Details** → **Reset Security Token**.
-2. Choose *Confirm reset*.
+1. Go to **Settings** → **Security** → **Authentication**.
+2. Click *Enable Two-Factor Authentication*.
 ## Troubleshooting
-Contact support if missing.
+Contact IT if the QR code does not scan.
 `;
-const EXPECTED = ['node_profile', 'node_auth', 'node_security', 'node_reset'];
-const OLD_BOLD = '**Profile Settings** → **API & Security Details** → **Reset Security Token**';
-const NEW_BOLD = '**Profile** → **Authentication** → **Security** → **Reset Security Token**';
+const EXPECTED = ['node_settings', 'node_security', 'node_two_step'];
+const OLD_BOLD = '**Settings** → **Security** → **Authentication**';
+const NEW_BOLD = '**Settings** → **Security** → **Two-Step Verification**';
 const GOOD_PATCH = ORIGINAL.replace(OLD_BOLD, NEW_BOLD);
 
 assertEq(validatePatch(ORIGINAL, GOOD_PATCH, EXPECTED).passed, true, 'well-formed patch passes');
 
-const SKIPPED = ORIGINAL.replace(OLD_BOLD, '**Reset Security Token**');
+const SKIPPED = ORIGINAL.replace(OLD_BOLD, '**Two-Step Verification**');
 
 assertEq(validatePatch(ORIGINAL, SKIPPED, EXPECTED).passed, false, 'patch that skips levels is rejected');
 
@@ -200,14 +203,14 @@ assertEq(validatePatch(ORIGINAL, EDITED_OTHER, EXPECTED).passed, false, 'patch e
 // Deprecation is configuration: no node ships deprecated, because whether a
 // menu item is really gone is a statement about the product. Flip one and the
 // validator must refuse to publish any patch that reintroduces it.
-tax.TAXONOMY.nodes.node_api_security.is_deprecated = true;
+tax.TAXONOMY.nodes.node_auth.is_deprecated = true;
 assertEq(
   validatePatch(SEEDED_STALE, templatePatch(SEEDED_STALE, tax.displayPath(RETIRED_TARGET)), RETIRED_TARGET)
     .passed,
   false,
   'a patch reintroducing a deprecated step is rejected'
 );
-tax.TAXONOMY.nodes.node_api_security.is_deprecated = false;
+tax.TAXONOMY.nodes.node_auth.is_deprecated = false;
 assertEq(
   validatePatch(SEEDED_STALE, templatePatch(SEEDED_STALE, tax.displayPath(RETIRED_TARGET)), RETIRED_TARGET)
     .passed,
@@ -224,22 +227,22 @@ assertEq(
   'template patch passes the same validator'
 );
 assertEq(
-  TEMPLATED.includes('## Troubleshooting\nContact support if missing.'),
+  TEMPLATED.includes('## Troubleshooting\nContact IT if the QR code does not scan.'),
   true,
   'template patch leaves other sections untouched'
 );
 
 console.log('\n--- markdown.js: the Freshdesk round trip ---');
-const HTML = '<h2>Reset your security token</h2><p>Use this guide if your token expired.</p>'
-  + '<h3>Steps</h3><ol><li>Go to <b>Profile Settings</b> &rarr; <b>API &amp; Security Details</b> &rarr; <b>Reset Security Token</b>.</li>'
-  + '<li>Choose <i>Confirm reset</i>.</li></ol>'
-  + '<h3>Troubleshooting</h3><p>Contact support if missing.</p>';
-const SEEDED = normaliseArticleMarkdown(htmlToMarkdown(HTML), 'Reset your security token');
+const HTML = '<h2>Enable two-factor authentication</h2><p>Use this guide to add a second sign-in step.</p>'
+  + '<h3>Steps</h3><ol><li>Go to <b>Settings</b> &rarr; <b>Security</b> &rarr; <b>Authentication</b>.</li>'
+  + '<li>Click <i>Enable Two-Factor Authentication</i>.</li></ol>'
+  + '<h3>Troubleshooting</h3><p>Contact IT if the QR code does not scan.</p>';
+const SEEDED = normaliseArticleMarkdown(htmlToMarkdown(HTML), 'Enable two-factor authentication');
 
 assertEq(
   documentedPathOf(SEEDED),
-  ['node_profile_settings', 'node_api_security', 'node_reset'],
-  'documented path read from the HTML, deprecated nodes included'
+  ['node_settings', 'node_security', 'node_auth'],
+  'documented path read from the HTML'
 );
 assertEq(
   validatePatch(SEEDED, templatePatch(SEEDED, tax.displayPath(EXPECTED)), EXPECTED).passed,
@@ -247,14 +250,35 @@ assertEq(
   'a Freshdesk-sourced article is patchable'
 );
 
+// How the knowledge base actually writes it: a "Step-by-Step Instructions"
+// heading, labelled steps, buttons in bold, and a menu named again at the end.
+const AUTHORED = htmlToMarkdown('<h3>Overview</h3><p>Update your details.</p>'
+  + '<h3>Step-by-Step Instructions</h3><ol>'
+  + '<li><strong>Access Profile:</strong> Go to <strong>Settings</strong> &rarr; <strong>Profile</strong>.</li>'
+  + '<li><strong>Edit Details:</strong> Click <strong>Edit</strong>, then <strong>Save</strong>.</li>'
+  + '<li>The details appear on the <strong>Profile</strong> page.</li></ol>');
+const AUTHORED_MD = normaliseArticleMarkdown(AUTHORED, 'Update your profile');
+
+assertEq(
+  documentedPathOf(AUTHORED_MD),
+  ['node_settings', 'node_profile', 'node_edit'],
+  'a Step-by-Step Instructions section is read as the Steps, buttons ignored, repeats counted once'
+);
+assertEq(stepsHeadingOf(AUTHORED), 'Step-by-Step Instructions', 'the authored heading is remembered');
+assertEq(
+  restoreStepsHeading(AUTHORED_MD, 'Step-by-Step Instructions').includes('## Step-by-Step Instructions\n'),
+  true,
+  'and put back when publishing'
+);
+
 const NO_STEPS = normaliseArticleMarkdown(
-  htmlToMarkdown('<h1>Reset token</h1><p>Go to <b>Profile</b> &rarr; <b>Authentication</b>.</p>'),
-  'Reset token'
+  htmlToMarkdown('<h1>Enable 2FA</h1><p>Go to <b>Settings</b> &rarr; <b>Security</b>.</p>'),
+  'Enable 2FA'
 );
 
 assertEq(
   documentedPathOf(NO_STEPS),
-  ['node_profile', 'node_auth'],
+  ['node_settings', 'node_security'],
   'an article with no Steps heading gets one'
 );
 

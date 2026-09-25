@@ -147,17 +147,31 @@ title-overlap stand-in answers instead, and the output says so.
 
 `server/lib/taxonomy.js` is the product's navigation graph, and every later
 stage reasons over it. If it does not match your product, correctly extracted
-tickets come back `inconsistent` and no drift is ever detected. It currently
-describes:
+tickets come back `inconsistent` and no drift is ever detected. It describes
+the menus the knowledgeopshack.freshdesk.com knowledge base documents:
 
-    Profile
-      Authentication            <- the route agents use now
-        Security
-          Reset Security Token  <--+
-      Profile Settings             |  the same button, reachable both ways
-        API & Security Details  ---+  (both retired steps are deprecated, so
-                                       the validator rejects any patch that
-                                       puts them back)
+    Settings
+      Security
+        Authentication            <- where the 2FA article says to go
+        Two-Step Verification     <- where 2FA lives in the current release
+      Profile
+        Edit                      <- the documented way to change details
+      Account Center
+        Personal Info             <- the newer way
+      Wi-Fi
+    Login
+      Forgot Password
+    Help Portal
+      New Ticket
+      Software Catalog
+    OneDrive
+      Recycle Bin
+
+Only navigation menus are nodes. Buttons (Save, Verify, Submit) are not, so
+the bold buttons the articles also contain never count as steps. Aliases stay
+specific on purpose: the offline extractor scans reply text for every alias,
+so an everyday word such as "account" or "file" would match replies that
+never mention that menu.
 
 It is a **graph, not a tree**: a node may have several parents, because real
 UIs reach one destination by more than one route. Forcing a single parent made
@@ -179,8 +193,12 @@ rather than poisoning the walk.
 ## Articles need a documented path
 
 Drift is the difference between the path agents walk and the path the article
-documents. The article side is read from **bold spans inside a `Steps`
-section**, so an article with no bold menu items documents nothing, every
+documents. The article side is read from **bold spans inside the procedure
+section** - a heading called `Steps`, or the author's own "Step-by-Step
+Instructions", "Instructions" or "Procedure". Buttons in bold are ignored
+(they are not taxonomy nodes) and a menu mentioned again later counts once.
+The stored copy calls the section `Steps`; a published patch puts the
+author's heading back. An article with no bold menu items documents nothing, every
 observed path trivially differs from it, and the resulting "drift" is an
 artefact. The ingest logs a `warning` when this happens.
 
@@ -191,6 +209,31 @@ visible in the body, and none of it parses as formatting.
 
 The article is re-read from Freshdesk on every ingest, so edits take effect on
 the next simulate with no cache to clear.
+
+## Demo data
+
+`demo_scenarios.js` holds a ticket set built against the live knowledge base
+and this taxonomy; `node create_articles_tickets.js` creates the tickets
+(Open, assigned, tagged `knowledgeops-demo`, ids saved to
+`data/demo_tickets.json`) and `node reslove_tickets.js` posts each agent's
+resolution without changing the status. Resolving the tickets in Freshdesk is
+what makes KnowledgeOps analyse them:
+
+| Article | Tickets | Result |
+| --- | --- | --- |
+| How to Enable Two-Factor Authentication | 5, four agents, all on Settings -> Security -> Two-Step Verification | High Knowledge Drift (1.00) |
+| How to Update Your Profile Information | 3 follow the article, 4 (three agents) use Settings -> Account Center -> Personal Info | Emerging Knowledge Drift (~0.64) |
+| none | AWS developer sandbox request | Knowledge Gap, new article drafted |
+
+Resolve the three profile tickets that follow the article first; otherwise
+the profile article reads as high drift until they arrive.
+
+A Freddy AI Agent on the helpdesk claims new tickets and answers them from
+the knowledge base. `reslove_tickets.js` hands each demo ticket back to its
+human agent (still Open), and KnowledgeOps never counts Freshdesk's
+acknowledgements or Freddy AI answers as the resolution - an AI answer quotes
+the article, so it would make every ticket look like it followed the
+documented steps.
 
 ## Who can approve
 
@@ -262,6 +305,38 @@ dependency-free, credential-free relay:
 call with the credentials in `.env`. The FDK app itself cannot read `.env`;
 enter the same values on the settings page. A failed call is logged and shown
 on the board, and never blocks an alert or an approval.
+
+### Freddy AI action: freshness checker
+
+`actions.json` exposes two AI actions that Freddy AI Agent Studio (and
+Workflow Automator) can call:
+
+| Action | Parameters | Returns |
+| --- | --- | --- |
+| `checkTicketFreshness` | `ticket_id` | `freshness` (`fresh`, `emerging_drift`, `high_drift`, `knowledge_gap`, `not_checked`), `is_stale`, `summary`, the matched article, `published_path` vs `agent_path`, `changed_step`, `evidence`, `recommended_action`, `bot_message`, `alert_id`, `admin_notified` |
+| `getArticleFreshness` | `article_id` | `freshness`, `is_stale`, `summary`, `drift_confidence`, `recommended_action`, `bot_message` |
+
+`checkTicketFreshness` is meant for the moment a ticket is resolved. If the
+`onTicketUpdate` event already analysed the ticket it answers from the stored
+result; otherwise it runs the same pipeline itself (match, drift check, alerts,
+admin call), so the event and Freddy can fire in either order. A bad ticket id
+comes back as a 400 and an unknown article as a 404.
+
+To wire it up once the app is installed (custom app, `fdk pack` + upload):
+
+1. **Admin → AI Agent Studio** → open (or create) the agent → **Actions** →
+   add the KnowledgeOps app action **Check knowledge freshness for a resolved
+   ticket**.
+2. Map `ticket_id` to the ticket's ID, and trigger it when a ticket's status
+   becomes **Resolved** (or add it as a step in a Workflow Automator rule on
+   that condition).
+3. Use `summary` / `recommended_action` in the agent's reply or note, and
+   `freshness` to branch (e.g. only escalate on `high_drift` or
+   `knowledge_gap`).
+
+Locally, both actions can be exercised from the FDK test page
+(<http://localhost:10001/web/test> under `fdk run`) with the payloads in
+`server/test_data/`.
 
 ### Automatic detection from Freshdesk
 

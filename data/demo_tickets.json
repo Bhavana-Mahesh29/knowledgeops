@@ -1,0 +1,93 @@
+[
+  {
+    "key": "profile-follow-1",
+    "ticketId": 37,
+    "group": "Emerging drift - follows the article",
+    "articleId": "68000037330",
+    "repliedAt": "2026-09-25T20:19:42.052Z"
+  },
+  {
+    "key": "profile-follow-2",
+    "ticketId": 38,
+    "group": "Emerging drift - follows the article",
+    "articleId": "68000037330",
+    "repliedAt": "2026-09-25T20:19:45.328Z"
+  },
+  {
+    "key": "profile-follow-3",
+    "ticketId": 39,
+    "group": "Emerging drift - follows the article",
+    "articleId": "68000037330",
+    "repliedAt": "2026-09-25T20:19:48.586Z"
+  },
+  {
+    "key": "2fa-drift-1",
+    "ticketId": 40,
+    "group": "High drift - new route",
+    "articleId": "68000037325",
+    "repliedAt": "2026-09-25T20:19:51.528Z"
+  },
+  {
+    "key": "2fa-drift-2",
+    "ticketId": 41,
+    "group": "High drift - new route",
+    "articleId": "68000037325",
+    "repliedAt": "2026-09-25T20:19:54.912Z"
+  },
+  {
+    "key": "2fa-drift-3",
+    "ticketId": 42,
+    "group": "High drift - new route",
+    "articleId": "68000037325",
+    "repliedAt": "2026-09-25T20:19:58.212Z"
+  },
+  {
+    "key": "2fa-drift-4",
+    "ticketId": 43,
+    "group": "High drift - new route",
+    "articleId": "68000037325",
+    "repliedAt": "2026-09-25T20:20:01.343Z"
+  },
+  {
+    "key": "2fa-drift-5",
+    "ticketId": 44,
+    "group": "High drift - new route",
+    "articleId": "68000037325",
+    "repliedAt": "2026-09-25T20:20:04.766Z"
+  },
+  {
+    "key": "profile-drift-1",
+    "ticketId": 45,
+    "group": "Emerging drift - new route",
+    "articleId": "68000037330",
+    "repliedAt": "2026-09-25T20:20:08.046Z"
+  },
+  {
+    "key": "profile-drift-2",
+    "ticketId": 46,
+    "group": "Emerging drift - new route",
+    "articleId": "68000037330",
+    "repliedAt": "2026-09-25T20:20:11.211Z"
+  },
+  {
+    "key": "profile-drift-3",
+    "ticketId": 47,
+    "group": "Emerging drift - new route",
+    "articleId": "68000037330",
+    "repliedAt": "2026-09-25T20:20:14.449Z"
+  },
+  {
+    "key": "profile-drift-4",
+    "ticketId": 48,
+    "group": "Emerging drift - new route",
+    "articleId": "68000037330",
+    "repliedAt": "2026-09-25T20:20:17.512Z"
+  },
+  {
+    "key": "gap-aws-sandbox",
+    "ticketId": 49,
+    "group": "Knowledge gap",
+    "articleId": null,
+    "repliedAt": "2026-09-25T20:20:20.760Z"
+  }
+]

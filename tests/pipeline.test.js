@@ -11,36 +11,39 @@ const tax = require('../server/lib/taxonomy.js');
 const eventPayload = require('../server/test_data/support_ticket/onTicketUpdate.json');
 
 const ARTICLE_ID = '5001';
-const ARTICLE_HTML = '<h2>Reset your security token</h2>'
-  + '<p>Use this guide if your token expired.</p>'
-  + '<h3>Steps</h3>'
-  + '<ol><li>Go to <b>Profile Settings</b> &rarr; <b>API &amp; Security Details</b> &rarr; <b>Reset Security Token</b>.</li>'
-  + '<li>Choose <i>Confirm reset</i>.</li></ol>'
-  + '<h3>Troubleshooting</h3><p>Contact support if missing.</p>';
+const ARTICLE_TITLE = 'How to Enable Two-Factor Authentication';
+// Written the way the knowledge base writes it: a "Step-by-Step Instructions"
+// heading rather than "Steps".
+const ARTICLE_HTML = `<h2>${ARTICLE_TITLE}</h2>`
+  + '<p>Use this guide to add a second sign-in step.</p>'
+  + '<h3>Step-by-Step Instructions</h3>'
+  + '<ol><li>Go to <b>Settings</b> &rarr; <b>Security</b> &rarr; <b>Authentication</b>.</li>'
+  + '<li>Choose <i>Enable two-factor</i>.</li></ol>'
+  + '<h3>Troubleshooting</h3><p>Contact IT if the QR code does not scan.</p>';
 
-// Profile -> Authentication -> Security -> Reset Security Token
-const NEW_PATH = ['Profile', 'Authentication', 'Security', 'Reset Security Token'];
+// Settings -> Security -> Two-Step Verification
+const NEW_PATH = ['Settings', 'Security', 'Two-Step Verification'];
 
 function reply(agentId, body) {
   return {
     incoming: false,
     private: false,
     user_id: agentId,
-    body: `<p>Go to your profile, click Authentication, then Security, then reset security token. `
-      + `Full guide: https://example.freshdesk.com/support/solutions/articles/${ARTICLE_ID}-reset-token</p>`,
+    body: `<p>Go to Settings, open the Security tab, then Two-Step Verification. `
+      + `Full guide: https://example.freshdesk.com/support/solutions/articles/${ARTICLE_ID}-enable-2fa</p>`,
     body_text: body
   };
 }
 
-const REPLY_TEXT = 'Go to your profile, click Authentication, then the Security tab, '
-  + 'then reset security token. Reach me at agent@example.com if it fails. - Priya';
+const REPLY_TEXT = 'Go to Settings, open the Security tab, then Two-Step Verification '
+  + 'and scan the QR code. Reach me at agent@example.com if it fails. - Priya';
 
 // Minimal Freshdesk + Anthropic doubles. anthropicMessages rejects on purpose
 // so the run exercises the offline fallbacks (alias scan + template patch),
 // which is also what happens in practice when no API key is configured.
 function createRequestApi(overrides = {}) {
   const calls = [];
-  const article = { id: ARTICLE_ID, title: 'Reset your security token', description: ARTICLE_HTML };
+  const article = { id: ARTICLE_ID, title: ARTICLE_TITLE, description: ARTICLE_HTML };
 
   const handlers = Object.assign({
     anthropicMessages: () => Promise.reject({ status: 401, response: '{"error":"no key"}' }),
@@ -53,7 +56,7 @@ function createRequestApi(overrides = {}) {
     }),
     fdGetConversations: () => Promise.resolve({
       response: JSON.stringify([
-        { incoming: true, private: false, body: '<p>My token expired</p>', body_text: 'My token expired' },
+        { incoming: true, private: false, body: '<p>Where is the 2FA option?</p>', body_text: 'Where is the 2FA option?' },
         reply(320, REPLY_TEXT)
       ])
     }),
@@ -118,9 +121,7 @@ describe('onTicketUpdate -> alert -> publish', () => {
     expect(alerts).toHaveLength(1);
     expect(alerts[0].band).toBe('critical');
     expect(alerts[0].targetPathLabels).toEqual(NEW_PATH);
-    expect(alerts[0].documentedPathLabels).toEqual([
-      'Profile Settings', 'API & Security Details', 'Reset Security Token'
-    ]);
+    expect(alerts[0].documentedPathLabels).toEqual(['Settings', 'Security', 'Authentication']);
     expect(alerts[0].patch.passed).toBe(true);
   });
 
@@ -155,9 +156,56 @@ describe('onTicketUpdate -> alert -> publish', () => {
     const put = requests.calls.filter((c) => c.template === 'fdUpdateArticle');
 
     expect(put).toHaveLength(1);
-    expect(requests.article.description).toContain('<b>Reset Security Token</b>');
-    expect(requests.article.description).not.toContain('<b>API &amp; Security Details</b>');
-    expect(requests.article.description).not.toContain('<b>Profile Settings</b>');
+    expect(requests.article.description).toContain('<b>Two-Step Verification</b>');
+    expect(requests.article.description).not.toContain('<b>Authentication</b>');
+  });
+
+  test("publishing keeps the author's own procedure heading", async () => {
+    await env.methods.onTicketUpdateHandler(ticketEvent(205, 4, 320));
+
+    const alerts = await renderData.call(() => env.methods.listAlerts({}));
+
+    expect(alerts[0].patch.markdown).toContain('## Steps\n');
+
+    await renderData.call(() => env.methods.approveAlert({
+      alertId: alerts[0].alertId,
+      actor: 'lead@example.com',
+      iparams: { publish_mode: 'demo' }
+    }));
+
+    expect(requests.article.description).toContain('<h2>Step-by-Step Instructions</h2>');
+    expect(requests.article.description).not.toContain('<h2>Steps</h2>');
+  });
+
+  // What a helpdesk with a Freddy AI Agent really produces: Freshdesk's own
+  // acknowledgement, then Freddy answering from the (stale) article, then the
+  // human agent's actual fix. Only the last one is evidence.
+  test('system acknowledgements and Freddy AI answers are not counted as the resolution', async () => {
+    const withBots = createRequestApi({
+      fdGetConversations: () => Promise.resolve({
+        response: JSON.stringify([
+          { incoming: true, private: false, body: '<p>Where is the 2FA option?</p>', body_text: 'Where is the 2FA option?' },
+          { incoming: false, private: false, user_id: 0, body: '<p>We received your request.</p>', body_text: 'We received your request. Check Settings for updates.' },
+          {
+            incoming: false,
+            private: false,
+            user_id: 68010984081,
+            body: '<p>Go to Settings, then Security, then Authentication.</p><p>Disclaimer: This email was generated by Freddy AI Agent.</p>',
+            body_text: 'Go to Settings, then Security, then Authentication. Disclaimer: This email was generated by Freddy AI Agent.'
+          },
+          reply(320, REPLY_TEXT)
+        ])
+      })
+    });
+    const local = loadServer({ $request: withBots.api, renderData });
+
+    await local.methods.onTicketUpdateHandler(ticketEvent(205, 4, 320));
+
+    const alerts = await renderData.call(() => local.methods.listAlerts({}));
+
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].targetPathLabels).toEqual(NEW_PATH);
+    expect(JSON.parse(local.db.rows.get('tickets:205').value).redactedText).not.toContain('Freddy');
   });
 
   test('a ticket that is not resolved is skipped rather than failing', async () => {
@@ -180,18 +228,16 @@ describe('onTicketUpdate -> alert -> publish', () => {
     expect(answer.status).toBe('critical');
     expect(answer.recommended_action).toBe('answer_with_provisional_notice');
     expect(answer.provisional_path_labels).toEqual(NEW_PATH);
-    expect(answer.bot_message).toContain('Profile → Authentication → Security → Reset Security Token');
+    expect(answer.bot_message).toContain('Settings → Security → Two-Step Verification');
   });
 
-  // Reproduces the real ticket that produced
-  //   canonicalStatus: "has_unknown", unknownLabels: ["reset security token",
-  //   "enter password", "confirm and generate new token"]
-  // and no alert, because one unmapped label used to discard the whole ticket.
+  // The shape of a real extraction: menus named with filler words around
+  // them, plus buttons and form fields that are not menus at all. One
+  // unmapped label used to discard the whole ticket.
   describe('taxonomy learning', () => {
-    // Verbatim from what Haiku returned for the real ticket 4.
     const WORDY_STEPS = [
-      'profile', 'click authentication', 'click security', 'click reset security token',
-      'enter password', 'confirm and generate new token'
+      'open settings', 'click security', 'click two-step verification',
+      'scan the qr code', 'enter the 6-digit code'
     ];
 
     // Here Haiku *succeeds*, unlike the other cases in this file: the point is
@@ -215,7 +261,7 @@ describe('onTicketUpdate -> alert -> publish', () => {
           });
         },
         fdGetConversations: () => Promise.resolve({
-          response: JSON.stringify([reply(320, 'Steps to be followed: go to your profile ...')])
+          response: JSON.stringify([reply(320, 'Steps to be followed: go to settings ...')])
         })
       });
     }
@@ -243,10 +289,10 @@ describe('onTicketUpdate -> alert -> publish', () => {
       const candidates = labels.filter((l) => l.promotedTo === null);
 
       expect(learned.map((l) => l.label).sort()).toEqual([
-        'click authentication', 'click reset security token', 'click security'
+        'click security', 'click two-step verification', 'open settings'
       ]);
       expect(candidates.map((l) => l.label).sort()).toEqual([
-        'confirm and generate new token', 'enter password'
+        'enter the 6-digit code', 'scan the qr code'
       ]);
     });
 
@@ -259,9 +305,9 @@ describe('onTicketUpdate -> alert -> publish', () => {
       const aliases = await local.sandbox.$db.get('learned:aliases');
 
       expect(JSON.parse(aliases.value)).toEqual({
-        'click authentication': 'node_auth',
+        'open settings': 'node_settings',
         'click security': 'node_security',
-        'click reset security token': 'node_reset'
+        'click twostep verification': 'node_two_step'
       });
 
       const undone = await renderData.call(() => local.methods.resetLearning({}));
@@ -282,16 +328,16 @@ describe('onTicketUpdate -> alert -> publish', () => {
       local.db.rows.set('learned:aliases', {
         value: JSON.stringify({
           'click security': 'node_gone',
-          'click reset security token': 'node_also_gone'
+          'click twostep verification': 'node_also_gone'
         })
       });
 
       await local.methods.onTicketUpdateHandler(ticketEvent(205, 4, 320));
 
       expect(JSON.parse(local.db.rows.get('learned:aliases').value)).toEqual({
-        'click authentication': 'node_auth',
+        'open settings': 'node_settings',
         'click security': 'node_security',
-        'click reset security token': 'node_reset'
+        'click twostep verification': 'node_two_step'
       });
 
       const alerts = await renderData.call(() => local.methods.listAlerts({}));
@@ -313,11 +359,11 @@ describe('onTicketUpdate -> alert -> publish', () => {
     });
   });
 
-  // Ticket 5: the agent walked the superseded route but named the button by
-  // its current label. Every label resolves, yet no single route joins them
-  // up - the graph is missing an edge, and only structure learning can add it.
+  // The agent reached Two-Step Verification straight from Profile. Every
+  // label resolves, yet no single route joins them up - the graph is missing
+  // an edge, and only structure learning can add it.
   describe('route learning', () => {
-    const OLD_ROUTE_STEPS = ['profile settings', 'api details', 'reset security token'];
+    const OLD_ROUTE_STEPS = ['profile', 'two-step verification'];
 
     function oldRouteRequests() {
       return createRequestApi({
@@ -342,15 +388,13 @@ describe('onTicketUpdate -> alert -> publish', () => {
       await local.methods.onTicketUpdateHandler(ticketEvent(205, 4, 320));
 
       expect(JSON.parse(local.db.rows.get('learned:edges').value)).toEqual({
-        node_reset: ['node_api_security']
+        node_two_step: ['node_profile']
       });
 
       const ticket = JSON.parse(local.db.rows.get('tickets:205').value);
 
       expect(ticket.status).toBe('ok');
-      expect(tax.displayPath(ticket.canonicalPath)).toEqual([
-        'Profile', 'Profile Settings', 'API & Security Details', 'Reset Security Token'
-      ]);
+      expect(tax.displayPath(ticket.canonicalPath)).toEqual(['Settings', 'Profile', 'Two-Step Verification']);
     });
 
     test('the learned route is reported and can be undone', async () => {
@@ -362,8 +406,8 @@ describe('onTicketUpdate -> alert -> publish', () => {
       const report = await renderData.call(() => local.methods.listLearning({}));
 
       expect(report.routes).toEqual([{
-        from: 'API & Security Details',
-        to: 'Reset Security Token',
+        from: 'Profile',
+        to: 'Two-Step Verification',
         tickets: 1,
         promoted: true
       }]);
@@ -386,7 +430,7 @@ describe('onTicketUpdate -> alert -> publish', () => {
       const current = loadServer({ $request: createRequestApi().api, renderData });
 
       current.db.rows.set('learned:edges', {
-        value: JSON.stringify({ node_reset: ['node_api_security'] })
+        value: JSON.stringify({ node_two_step: ['node_profile'] })
       });
 
       await current.methods.onTicketUpdateHandler(ticketEvent(206, 4, 321));
@@ -420,8 +464,8 @@ describe('onTicketUpdate -> alert -> publish', () => {
     test('a hand edit is revalidated and can then be published', async () => {
       const alert = await openAlert(env);
       const edited = alert.patch.markdown.replace(
-        'Choose *Confirm reset*.',
-        'Choose *Confirm reset* and copy the token.'
+        'Choose *Enable two-factor*.',
+        'Choose *Enable two-factor* and save the backup codes.'
       );
 
       const updated = await renderData.call(() => env.methods.updatePatch({
@@ -442,12 +486,12 @@ describe('onTicketUpdate -> alert -> publish', () => {
       }));
 
       expect(published.published).toBe(true);
-      expect(requests.article.description).toContain('copy the token');
+      expect(requests.article.description).toContain('save the backup codes');
     });
 
     test('an edit that breaks the rules fails the same validator', async () => {
       const alert = await openAlert(env);
-      const broken = alert.patch.markdown.replace(/\*\*Authentication\*\* \u2192 /, '');
+      const broken = alert.patch.markdown.replace(/\*\*Security\*\* \u2192 /, '');
 
       const updated = await renderData.call(() => env.methods.updatePatch({
         alertId: alert.alertId,

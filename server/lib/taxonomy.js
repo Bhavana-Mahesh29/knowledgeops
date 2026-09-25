@@ -8,35 +8,58 @@
 // patch whose bold steps are not nodes in it.
 //
 // It is a graph, not a tree, because real UIs reach the same destination by
-// more than one route - Reset Security Token sits under Security on the
-// current route and under API & Security Details on the superseded one. A
-// single-parent model forced those two facts to contradict each other and
-// reported honest tickets as 'inconsistent'.
+// more than one route - a page can sit under one menu on the current route
+// and another on a superseded one. A single-parent model forced those two
+// facts to contradict each other and reported honest tickets as
+// 'inconsistent'. Routes the app learns from tickets become extra parents.
 //
 // Two things here are learned rather than authored, and live in $db instead
 // of this file: extra aliases for nodes, and extra parent edges. Both are
 // layered on per call, so editing this file is always safe.
 'use strict';
 
+// Modelled on the menus the knowledge base at knowledgeopshack.freshdesk.com
+// documents. Only navigation menus are nodes - buttons such as Save, Verify
+// or Submit are not, so they never count as a step.
+//
+// Aliases are kept specific on purpose. The offline extractor scans reply
+// text for every alias, so a bare everyday word ("account", "file") would
+// turn up in replies that never mention that menu.
+//
+// Set is_deprecated on a node only when that menu item is genuinely gone
+// from the product. Doing so is a deliberate statement, not a guess - the
+// validator will then refuse to publish any patch containing it, which makes
+// every alert targeting that route unapprovable by design.
 const TAXONOMY = {
-  version: '2026-09-23',
+  version: '2026-09-26',
   nodes: {
-    node_profile:          { parents: [],                         label: 'Profile',                aliases: ['profile', 'my profile', 'user profile'], is_deprecated: false },
+    node_settings:        { parents: [],                  label: 'Settings',              aliases: ['settings', 'settings menu'], is_deprecated: false },
 
-    // Current route.
-    node_auth:             { parents: ['node_profile'],           label: 'Authentication',         aliases: ['authentication', 'auth'], is_deprecated: false },
-    node_security:         { parents: ['node_auth'],              label: 'Security',               aliases: ['security', 'security tab', 'suraksha'], is_deprecated: false },
+    // Settings -> Security: where sign-in protection lives. Authentication is
+    // the page the articles document for 2FA; Two-Step Verification is the
+    // page the current release moved it to.
+    node_security:        { parents: ['node_settings'],   label: 'Security',              aliases: ['security', 'security tab', 'suraksha'], is_deprecated: false },
+    node_auth:            { parents: ['node_security'],   label: 'Authentication',        aliases: ['authentication', 'auth'], is_deprecated: false },
+    node_two_step:        { parents: ['node_security'],   label: 'Two-Step Verification', aliases: ['two-step verification', 'two step verification', '2-step verification', 'two-step verification page'], is_deprecated: false },
 
-    // The other route to the same button. Both routes are live: set
-    // is_deprecated on a node only when that menu item is genuinely gone from
-    // the product. Doing so is a deliberate statement, not a guess - the
-    // validator will then refuse to publish any patch containing it, which
-    // makes every alert targeting that route unapprovable by design.
-    node_profile_settings: { parents: ['node_profile'],           label: 'Profile Settings',       aliases: ['profile settings'], is_deprecated: false },
-    node_api_security:     { parents: ['node_profile_settings'],  label: 'API & Security Details', aliases: ['api security details', 'api and security details', 'api security', 'security details'], is_deprecated: false },
+    // Settings -> Profile is the documented way to change personal details;
+    // Settings -> Account Center -> Personal Info is the newer one.
+    node_profile:         { parents: ['node_settings'],   label: 'Profile',               aliases: ['profile', 'my profile', 'user profile'], is_deprecated: false },
+    node_edit:            { parents: ['node_profile'],    label: 'Edit',                  aliases: ['edit', 'edit profile'], is_deprecated: false },
+    node_account_center:  { parents: ['node_settings'],   label: 'Account Center',        aliases: ['account center', 'account centre'], is_deprecated: false },
+    node_personal_info:   { parents: ['node_account_center'], label: 'Personal Info',     aliases: ['personal info', 'personal information', 'personal details'], is_deprecated: false },
 
-    // The same button, reachable from either route.
-    node_reset:            { parents: ['node_security'],          label: 'Reset Security Token',   aliases: ['reset security token', 'regenerate security token', 'security token reset'], is_deprecated: false },
+    node_wifi:            { parents: ['node_settings'],   label: 'Wi-Fi',                 aliases: ['wi-fi', 'wifi', 'wireless'], is_deprecated: false },
+
+    node_login:           { parents: [],                  label: 'Login',                 aliases: ['login', 'login page', 'sign-in page'], is_deprecated: false },
+    node_forgot_password: { parents: ['node_login'],      label: 'Forgot Password',       aliases: ['forgot password', 'forgot your password'], is_deprecated: false },
+
+    node_help_portal:     { parents: [],                  label: 'Help Portal',           aliases: ['help portal', 'support portal', 'it help portal'], is_deprecated: false },
+    node_new_ticket:      { parents: ['node_help_portal'], label: 'New Ticket',           aliases: ['new ticket', 'raise a ticket'], is_deprecated: false },
+    node_software_catalog: { parents: ['node_help_portal'], label: 'Software Catalog',    aliases: ['software catalog', 'software catalogue'], is_deprecated: false },
+
+    node_onedrive:        { parents: [],                  label: 'OneDrive',              aliases: ['onedrive', 'one drive'], is_deprecated: false },
+    node_recycle_bin:     { parents: ['node_onedrive'],   label: 'Recycle Bin',           aliases: ['recycle bin'], is_deprecated: false },
   },
 };
 
