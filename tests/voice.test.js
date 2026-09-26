@@ -83,3 +83,54 @@ describe('voice relay', () => {
     expect(relay.answerXml('')).toContain('Please open the Knowledge Ops board');
   });
 });
+
+// One ngrok URL serves Vobiz and the Freshdesk webhook: everything that is not
+// the call script is passed through to `fdk run`.
+describe('voice relay forwarding', () => {
+  const http = require('node:http');
+  const listen = (handler) => new Promise((resolve) => {
+    const server = http.createServer(handler).listen(0, () => resolve(server));
+  });
+  const post = (port, path, body) => new Promise((resolve, reject) => {
+    const req = http.request({ port, path, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
+      let data = '';
+
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+
+    req.on('error', reject);
+    req.end(body);
+  });
+
+  test('the Freshdesk webhook reaches the FDK server unchanged', async () => {
+    const seen = [];
+    const fdk = await listen((req, res) => {
+      let body = '';
+
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        seen.push({ method: req.method, url: req.url, body });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    const front = await listen(relay.createHandler(`http://localhost:${fdk.address().port}`));
+
+    const answer = await post(front.address().port, '/event/hook/common', '{"ticket_id":"42"}');
+
+    expect(answer).toEqual({ status: 200, body: '{"ok":true}' });
+    expect(seen).toEqual([{ method: 'POST', url: '/event/hook/common', body: '{"ticket_id":"42"}' }]);
+    fdk.close();
+    front.close();
+  });
+
+  test('a stopped FDK server is reported as a 502 that says what to start', async () => {
+    const front = await listen(relay.createHandler('http://localhost:9'));
+    const answer = await post(front.address().port, '/event/hook/common', '{}');
+
+    expect(answer.status).toBe(502);
+    expect(answer.body).toContain('fdk run');
+    front.close();
+  });
+});
